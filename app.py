@@ -50,10 +50,10 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
         pl.coalesce(["TBPH_end", "TBPH"]).alias("val_ph_goc")
     ])
 
-    # Đã sửa: Lọc bỏ tưới < 15 giây (rác) và > 600 giây (lỗi)
+    # Lọc bỏ tưới < 15 giây (rác) và > 600 giây (lỗi)
     df_pairs = df_pairs.filter((pl.col("duration_s") >= 15) & (pl.col("duration_s") < 600))
 
-    # Đã sửa: Nhóm theo ngày và tính Trung Bình Thời gian, TBEC, TBPH
+    # Nhóm theo ngày và tính Trung Bình Thời gian, TBEC, TBPH
     daily = df_pairs.group_by("Date").agg([
         pl.count().alias("turns"),
         pl.col("duration_s").mean().round(0).alias("avg_duration"),
@@ -82,7 +82,8 @@ with st.sidebar:
     target_area = st.text_input("Khu vực:", "ANT-2").upper()
     gap_limit = st.slider("Ngắt vụ (ngày):", 1, 10, 2)
     min_days = st.number_input("Ngày tối thiểu/vụ:", value=10)
-    uploaded_file = st.file_uploader("Tải file log", type=['txt'])
+    # ĐÃ SỬA: Cho phép chọn cả đuôi .txt và .json
+    uploaded_file = st.file_uploader("Tải file log", type=['txt', 'json'])
 
 if uploaded_file:
     res, msg = process_data(uploaded_file, target_area, gap_limit, min_days)
@@ -111,7 +112,6 @@ if uploaded_file:
         with tab2:
             st.subheader(f"Thống kê vận hành khu {target_area}")
             
-            # Biểu đồ giữ nguyên để dễ nhìn xu hướng số lần tưới
             daily_min_2 = daily.filter(pl.col("turns") >= 2)
             fig = px.bar(daily_min_2.to_pandas(), x="Date", y="turns", 
                          title="Các ngày có tần suất tưới >= 2 lần/ngày",
@@ -120,7 +120,6 @@ if uploaded_file:
             
             st.divider()
             
-            # Đã sửa: Giao diện chọn Vụ thay vì chọn Ngày
             season_dicts = seasons.to_dicts()
             if season_dicts:
                 season_options = {}
@@ -133,10 +132,8 @@ if uploaded_file:
                 if selected_season:
                     sel_id = season_options[selected_season]
                     
-                    # Lọc lấy tất cả các ngày thuộc Vụ đã chọn
                     season_daily_data = daily.filter(pl.col("s_id") == sel_id).sort("Date")
                     
-                    # Trích xuất và đổi tên các cột để hiển thị đẹp trên Web
                     display_df = season_daily_data.select([
                         pl.col("Date").dt.strftime("%d/%m/%Y").alias("Ngày"),
                         pl.col("turns").alias("Số lần tưới"),
@@ -145,7 +142,6 @@ if uploaded_file:
                         pl.col("avg_ph").alias("TBPH")
                     ]).to_pandas()
                     
-                    # Thêm cột Số Thứ Tự để đếm Ngày 1, Ngày 2,...
                     display_df.insert(0, "STT", range(1, len(display_df) + 1))
                     
                     st.write(f"Phân tích chi tiết **{selected_season}**:")
