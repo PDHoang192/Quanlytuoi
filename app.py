@@ -50,10 +50,8 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
         pl.coalesce(["TBPH_end", "TBPH"]).alias("val_ph_goc")
     ])
 
-    # Lọc bỏ tưới < 15 giây (rác) và > 600 giây (lỗi)
     df_pairs = df_pairs.filter((pl.col("duration_s") >= 15) & (pl.col("duration_s") < 600))
 
-    # Nhóm theo ngày và tính Trung Bình Thời gian, TBEC, TBPH
     daily = df_pairs.group_by("Date").agg([
         pl.count().alias("turns"),
         pl.col("duration_s").mean().round(0).alias("avg_duration"),
@@ -61,7 +59,6 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
         pl.col("val_ph_goc").mean().round(2).alias("avg_ph")
     ]).sort("Date")
 
-    # Tính toán chia vụ
     daily = daily.with_columns([
         (pl.col("Date").diff().dt.total_days() > gap_limit).fill_null(False).alias("is_new_season")
     ])
@@ -82,7 +79,12 @@ with st.sidebar:
     target_area = st.text_input("Khu vực:", "ANT-2").upper()
     gap_limit = st.slider("Ngắt vụ (ngày):", 1, 10, 2)
     min_days = st.number_input("Ngày tối thiểu/vụ:", value=10)
-    # ĐÃ SỬA: Cho phép chọn cả đuôi .txt và .json
+    
+    st.divider()
+    st.markdown("**Cấu hình Phân tích Giai đoạn**")
+    # Thêm thanh kéo để tùy chỉnh độ nhạy khi nhận diện giai đoạn qua EC
+    ec_threshold = st.slider("Độ lệch EC để nhận diện chuyển giai đoạn:", 0.05, 0.50, 0.15, step=0.05)
+    
     uploaded_file = st.file_uploader("Tải file log", type=['txt', 'json'])
 
 if uploaded_file:
@@ -90,7 +92,7 @@ if uploaded_file:
     
     if res:
         df_p, seasons, daily = res
-        tab1, tab2 = st.tabs(["📋 Báo cáo Vụ & Nghỉ", "🔍 Phân tích chi tiết Vụ Mùa"])
+        tab1, tab2 = st.tabs(["📋 Báo cáo Vụ & Nghỉ", "📈 Phân tích Giai đoạn Sinh trưởng"])
 
         with tab1:
             st.subheader("Bảng tổng hợp chu kỳ canh tác")
@@ -110,15 +112,7 @@ if uploaded_file:
             st.table(final_report)
 
         with tab2:
-            st.subheader(f"Thống kê vận hành khu {target_area}")
-            
-            daily_min_2 = daily.filter(pl.col("turns") >= 2)
-            fig = px.bar(daily_min_2.to_pandas(), x="Date", y="turns", 
-                         title="Các ngày có tần suất tưới >= 2 lần/ngày",
-                         color="turns", color_continuous_scale="Viridis")
-            st.plotly_chart(fig, use_container_width=True)
-            
-            st.divider()
+            st.subheader(f"Theo dõi dinh dưỡng & Sinh trưởng - Khu {target_area}")
             
             season_dicts = seasons.to_dicts()
             if season_dicts:
@@ -127,25 +121,70 @@ if uploaded_file:
                     label = f"VỤ MÙA {i+1} ({s['Start'].strftime('%d/%m/%Y')} - {s['End'].strftime('%d/%m/%Y')})"
                     season_options[label] = s["s_id"]
                 
-                selected_season = st.selectbox("🔍 Chọn Vụ để xem phân tích từng ngày:", options=list(season_options.keys()))
+                selected_season = st.selectbox("🔍 Chọn Vụ để phân tích:", options=list(season_options.keys()))
                 
                 if selected_season:
                     sel_id = season_options[selected_season]
                     
-                    season_daily_data = daily.filter(pl.col("s_id") == sel_id).sort("Date")
+                    # Lấy dữ liệu của vụ được chọn
+                    df_season = daily.filter(pl.col("s_id") == sel_id).sort("Date")
                     
-                    display_df = season_daily_data.select([
-                        pl.col("Date").dt.strftime("%d/%m/%Y").alias("Ngày"),
-                        pl.col("turns").alias("Số lần tưới"),
-                        pl.col("avg_duration").alias("TB Thời gian (giây)"),
-                        pl.col("avg_ec").alias("TBEC"),
-                        pl.col("avg_ph").alias("TBPH")
-                    ]).to_pandas()
+                    # -- TÍNH TOÁN STT VÀ PHÂN CHIA GIAI ĐOẠN THEO EC --
+                    # Tạo cột số thứ tự ngày trong vụ
+                    df_season = df_season.with_columns(pl.int_range(1, pl.len() + 1).alias("STT_Ngày"))
                     
-                    display_df.insert(0, "STT", range(1, len(display_df) + 1))
+                    # Tính độ lệch EC so với ngày hôm trước
+                    df_season = df_season.with_columns(
+                        pl.col("avg_ec").diff().abs().fill_null(0).alias("ec_diff")
+                    )
                     
-                    st.write(f"Phân tích chi tiết **{selected_season}**:")
-                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                    # Đánh dấu Giai đoạn mới nếu độ lệch lớn hơn ngưỡng ec_threshold
+                    df_season = df_season.with_columns(
+                        (pl.col("ec_diff") >= ec_threshold).cast(pl.Int32).cum_sum().alias("stage_idx")
+                    )
+                    df_season = df_season.with_columns(
+                        (pl.lit("Giai đoạn ") + (pl.col("stage_idx") + 1).cast(pl.Utf8)).alias("Giai_doan")
+                    )
+                    
+                    pd_season = df_season.to_pandas()
+
+                    # -- VẼ BIỂU ĐỒ --
+                    st.markdown(f"#### Biểu đồ thay đổi Dinh dưỡng (EC) - Tự động nhận diện giai đoạn")
+                    fig = px.line(pd_season, x="STT_Ngày", y="avg_ec", color="Giai_doan", markers=True,
+                                  title="Biến thiên Trung bình EC theo ngày tuổi của cây",
+                                  labels={"STT_Ngày": "Ngày tuổi (trong vụ)", "avg_ec": "Mức EC trung bình (mS/cm)", "Giai_doan": "Giai đoạn"},
+                                  line_shape="spline") # spline giúp đường cong mượt mà hơn
+                    
+                    fig.update_layout(yaxis_range=[pd_season['avg_ec'].min()*0.8, pd_season['avg_ec'].max()*1.2])
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # -- BẢNG TỔNG HỢP GIAI ĐOẠN --
+                    st.markdown("#### Bảng tóm tắt các Giai đoạn (Dựa trên công thức phân)")
+                    stage_summary = df_season.group_by("Giai_doan").agg([
+                        pl.col("STT_Ngày").min().alias("Ngày bắt đầu"),
+                        pl.col("STT_Ngày").max().alias("Ngày kết thúc"),
+                        pl.count().alias("Tổng số ngày"),
+                        pl.col("avg_ec").mean().round(2).alias("EC trung bình"),
+                        pl.col("avg_ph").mean().round(2).alias("pH trung bình")
+                    ]).sort("Ngày bắt đầu").to_pandas()
+                    
+                    st.dataframe(stage_summary, use_container_width=True, hide_index=True)
+
+                    st.divider()
+
+                    # -- BẢNG CHI TIẾT TỪNG NGÀY --
+                    with st.expander("Bấm vào đây để xem rà soát chi tiết từng ngày"):
+                        display_df = df_season.select([
+                            pl.col("STT_Ngày").alias("Ngày tuổi"),
+                            pl.col("Date").dt.strftime("%d/%m/%Y").alias("Lịch thực tế"),
+                            pl.col("Giai_doan").alias("Giai đoạn"),
+                            pl.col("turns").alias("Số lần tưới"),
+                            pl.col("avg_duration").alias("TB Thời gian (s)"),
+                            pl.col("avg_ec").alias("TBEC"),
+                            pl.col("avg_ph").alias("TBPH")
+                        ]).to_pandas()
+                        
+                        st.dataframe(display_df, use_container_width=True, hide_index=True)
             else:
                 st.info("Chưa có dữ liệu Vụ Mùa nào đủ điều kiện.")
     else:
