@@ -197,23 +197,31 @@ if uploaded_file:
                         ((pl.col("Date") - season_start).dt.total_days() + 1).alias("Ngày thứ")
                     ])
                     
-                    # BIỂU ĐỒ CỘT NGANG (Horizontal Bar Chart)
+                    # Chuyển sang pandas và sắp xếp chặt chẽ theo Ngày thứ
+                    df_plot = daily_stats.to_pandas().sort_values("Ngày thứ")
+                    
+                    # BIỂU ĐỒ CỘT DỌC (Vertical Bar Chart)
                     fig_season_turns = px.bar(
-                        daily_stats.to_pandas(), 
-                        x="Số lần tưới",      # Đổi X thành số lần tưới
-                        y="Ngày thứ",         # Đổi Y thành Ngày thứ
-                        orientation='h',      # Thuộc tính xoay ngang
+                        df_plot, 
+                        x="Ngày thứ",
+                        y="Số lần tưới",
                         title=f"Biểu đồ Số lần tưới theo ngày - {selected_season_name}",
                         text="Số lần tưới",
                         color="Số lần tưới",
-                        color_continuous_scale="Blues"
+                        color_continuous_scale="Blues",
+                        hover_data={"Date": True} # Thêm Ngày thực tế vào hộp thoại khi di chuột vào cột
                     )
+                    
                     fig_season_turns.update_traces(textposition='outside')
                     fig_season_turns.update_layout(
-                        xaxis_title="Số lần tưới", 
-                        yaxis_title="Ngày thứ trong Vụ",
-                        # Ép trục Y theo Category và đảo ngược để ngày 1 nằm trên cùng
-                        yaxis=dict(type='category', autorange="reversed") 
+                        xaxis_title="Ngày thứ trong Vụ", 
+                        yaxis_title="Số lần tưới",
+                        xaxis=dict(
+                            type='category',
+                            # Ép buộc trục X đi theo đúng danh sách Ngày thứ tự từ nhỏ đến lớn
+                            categoryorder='array', 
+                            categoryarray=df_plot["Ngày thứ"].tolist() 
+                        )
                     )
                     st.plotly_chart(fig_season_turns, use_container_width=True)
                     
@@ -226,7 +234,7 @@ if uploaded_file:
                 else:
                     st.info("Không có dữ liệu chi tiết cho vụ này.")
             else:
-                st.warning("Chưa có dữ liệu vụ canh tác nào đạt điều kiện.") 
+                st.warning("Chưa có dữ liệu vụ canh tác nào đạt điều kiện.")
 
         with tab3:
             st.subheader("Phân tích dữ liệu châm phân (EC Yêu Cầu)")
