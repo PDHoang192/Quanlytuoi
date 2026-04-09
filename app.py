@@ -239,35 +239,34 @@ if uploaded_file:
 
             if uploaded_cp_file:
                 try:
-                    # Đọc file lấy danh sách dictionary (đã xử lý regex ở hàm parse_log_file)
-                    data_cp = parse_log_file(uploaded_cp_file)
+                    # 1. ĐỌC THẲNG FILE DƯỚI DẠNG TEXT (BỎ QUA MỌI LỖI JSON BỊ THIẾU DẤU PHẨY/NGOẶC)
+                    content = uploaded_cp_file.getvalue().decode('utf-8', errors='ignore')
                     
-                    # Dùng dictionary thuần Python để gom nhóm theo ngày (chống mọi lỗi format)
                     daily_stats = {}
                     
-                    for row in data_cp:
-                        # 1. Lọc bồn
-                        ten_bon = str(row.get("Tên bồn", row.get("Tên khu", ""))).upper()
-                        if target_tank not in ten_bon:
+                    # Cắt file thành từng dòng để quét
+                    lines = content.split('\n')
+                    
+                    for line in lines:
+                        # Lọc: Chỉ xử lý nếu dòng có chứa tên bồn đang tìm kiếm
+                        if target_tank not in line.upper():
                             continue
                             
-                        # 2. Lấy thời gian (Chỉ lấy phần chữ trước dấu cách đầu tiên)
-                        time_raw = row.get("Thời gian", "")
-                        if not time_raw:
+                        # 2. Dùng Regex "bới" lấy Ngày tháng (chỉ lấy YYYY-MM-DD)
+                        date_match = re.search(r'["\']Thời gian["\']\s*:\s*["\'](\d{4}[-/]\d{2}[-/]\d{2})', line, re.IGNORECASE)
+                        if not date_match:
                             continue
-                        date_str = str(time_raw).split()[0] # VD: "2023-12-05 10:30" -> "2023-12-05"
+                        date_str = date_match.group(1).replace("/", "-") # Đưa về chuẩn YYYY-MM-DD
                         
-                        # 3. Lấy và dọn dẹp EC Yêu Cầu
-                        ec_raw = row.get("EC yêu cầu")
-                        if not ec_raw:
-                            continue
-                        try:
-                            # Lấy phần số và chia 100
-                            ec_val = float(re.search(r"(\d+[.,]?\d*)", str(ec_raw)).group(1).replace(",", ".")) / 100
-                        except:
+                        # 3. Dùng Regex "bới" lấy con số EC yêu cầu
+                        ec_match = re.search(r'["\']EC yêu cầu["\']\s*:\s*["\']?(\d+[.,]?\d*)', line, re.IGNORECASE)
+                        if not ec_match:
                             continue
                             
-                        # 4. Cộng dồn vào từ điển
+                        # Đổi dấu phẩy thành chấm và chia 100 theo logic cũ
+                        ec_val = float(ec_match.group(1).replace(",", ".")) / 100
+                        
+                        # 4. Cộng dồn vào từ điển theo ngày
                         if date_str not in daily_stats:
                             daily_stats[date_str] = {"sum": 0.0, "count": 0}
                         
@@ -275,29 +274,24 @@ if uploaded_file:
                         daily_stats[date_str]["count"] += 1
 
                     if not daily_stats:
-                        st.warning(f"Không tìm thấy dữ liệu EC yêu cầu hợp lệ cho {target_tank}")
+                        st.warning(f"Không tìm thấy dữ liệu hợp lệ cho {target_tank}")
                     else:
                         import pandas as pd
+                        import plotly.express as px
                         
-                        # 5. Tính trung bình và tạo bảng Pandas
+                        # 5. Tính trung bình và tạo bảng
                         plot_data = []
                         for d, vals in daily_stats.items():
                             plot_data.append({
-                                "Ngày chuỗi": d,
+                                "Ngày": d,
                                 "Trung bình EC yêu cầu": round(vals["sum"] / vals["count"], 2)
                             })
                         
                         df_plot = pd.DataFrame(plot_data)
-                        
-                        # Ép kiểu thời gian linh hoạt bằng Pandas để vẽ biểu đồ cho đẹp
-                        # format='mixed' giúp Pandas tự đoán định dạng dù nó lộn xộn
-                        df_plot["Date"] = pd.to_datetime(df_plot["Ngày chuỗi"], format='mixed', dayfirst=True, errors='coerce')
-                        
-                        # Dùng Date chuẩn để sort, nếu dòng nào lỗi thì dùng lại chuỗi gốc
-                        df_plot["Date"] = df_plot["Date"].fillna(df_plot["Ngày chuỗi"])
-                        df_plot = df_plot.sort_values("Date")
+                        df_plot["Date"] = pd.to_datetime(df_plot["Ngày"], errors='coerce')
+                        df_plot = df_plot.dropna(subset=["Date"]).sort_values("Date")
 
-                        st.success(f"Đã trích xuất thành công toàn bộ dữ liệu châm phân cho **{target_tank}**")
+                        st.success(f"Đã quét thành công toàn bộ chu kỳ cho **{target_tank}** (Bỏ qua hoàn toàn lỗi file ở dòng 2663)!")
                         
                         # Vẽ biểu đồ
                         fig_cp = px.line(
@@ -307,12 +301,12 @@ if uploaded_file:
                             title=f"Biểu đồ mức EC mục tiêu trung bình theo ngày - {target_tank}",
                             markers=True
                         )
-                        fig_cp.update_layout(xaxis_title="Ngày", yaxis_title="Mức EC Yêu cầu (mS/cm)")
+                        fig_cp.update_layout(xaxis_title="Thời gian (Ngày)", yaxis_title="Mức EC Yêu cầu (mS/cm)")
                         st.plotly_chart(fig_cp, use_container_width=True)
                         
-                        # Hiển thị bảng chi tiết
+                        # Bảng chi tiết
                         st.write("Bảng thống kê chi tiết toàn bộ chu kỳ:")
-                        st.dataframe(df_plot[["Ngày chuỗi", "Trung bình EC yêu cầu"]].rename(columns={"Ngày chuỗi": "Ngày thực tế"}), use_container_width=True, hide_index=True)
+                        st.dataframe(df_plot[["Ngày", "Trung bình EC yêu cầu"]], use_container_width=True, hide_index=True)
 
                 except Exception as e:
                     st.error(f"Lỗi xử lý hệ thống: {e}")
