@@ -117,4 +117,4 @@ if uploaded_file:
             for i, s in enumerate(s_list):
                 report.append({"Giai đoạn": f"VỤ {i+1}", "Bắt đầu": s["Start"], "Kết thúc": s["End"], "Số ngày": s["Days"]})
                 if i < len(s_list) - 1:
-                    gap = (s_list[i+1]["Start"] - s
+                   
