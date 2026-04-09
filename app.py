@@ -8,46 +8,65 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Hệ Thống Quản Lý Tưới", layout="wide", page_icon="🌱")
 
-# Hàm đọc file JSON chống lỗi (Tự động fix dấu phẩy thừa, thiếu phẩy hoặc nháy đơn)
+# Hàm đọc file siêu cường: Chống mọi lỗi định dạng JSON
 def parse_log_file(file_content):
     raw_text = file_content.getvalue().decode("utf-8").strip()
     
-    # Thử đọc chuẩn trước
-    try:
-        return json.loads(raw_text)
-    except json.JSONDecodeError:
-        pass 
-        
-    # Xử lý bọc mảng nếu thiếu
-    if not raw_text.startswith('['):
-        raw_text = "[" + raw_text + "]"
-        
-    # Fix các lỗi định dạng JSON phổ biến bằng Regex
-    # 1. Thêm dấu phẩy bị thiếu giữa các object (Lỗi Expecting ',' delimiter)
-    raw_text = re.sub(r'\}\s*\{', '},{', raw_text)
-    # 2. Xóa dấu phẩy thừa ở cuối mảng/object
-    raw_text = re.sub(r',\s*\]', ']', raw_text)
-    raw_text = re.sub(r',\s*\}', '}', raw_text)
+    # 1. Thử tiền xử lý và đọc bằng JSON chuẩn
+    raw_text_clean = re.sub(r'\}\s*\{', '},{', raw_text)
+    raw_text_clean = re.sub(r',\s*\}', '}', raw_text_clean)
+    raw_text_clean = re.sub(r',\s*\]', ']', raw_text_clean)
+    
+    json_text = raw_text_clean if raw_text_clean.startswith('[') else f"[{raw_text_clean}]"
     
     try:
-        return json.loads(raw_text)
-    except json.JSONDecodeError as e:
-        # Phương án cuối cùng: Đọc từng dòng bằng json.loads hoặc ast.literal_eval
-        data = []
-        for line in file_content.getvalue().decode("utf-8").strip().split('\n'):
-            line = line.strip()
-            if not line or line in ('[', ']'): continue
-            if line.endswith(','): line = line[:-1]
-            try:
-                data.append(json.loads(line))
-            except:
-                try:
-                    data.append(ast.literal_eval(line))
-                except:
-                    pass
-        if data:
-            return data
-        raise Exception(f"Không thể tự động sửa lỗi cấu trúc file. Lỗi gốc: {e}")
+        return json.loads(json_text)
+    except json.JSONDecodeError:
+        pass
+        
+    # 2. Thử đọc bằng AST (Linh hoạt hơn với dấu phẩy thừa)
+    try:
+        py_text = json_text.replace('true', 'True').replace('false', 'False').replace('null', 'None')
+        return ast.literal_eval(py_text)
+    except:
+        pass
+
+    # 3. Phương án cuối cùng: Quét Regex trích xuất trực tiếp dữ liệu (Bất chấp lỗi định dạng)
+    records = []
+    chunks = raw_text.split('"_id":') # Tách các khối dữ liệu bằng key "_id"
+    for chunk in chunks:
+        if not chunk.strip(): continue
+        record = {}
+        
+        # Trích xuất các trường thông tin cần thiết
+        time_match = re.search(r'"Thời gian"\s*:\s*"([^"]+)"', chunk)
+        if time_match: record["Thời gian"] = time_match.group(1)
+        
+        khu_match = re.search(r'"Tên khu"\s*:\s*"([^"]+)"', chunk)
+        if khu_match: record["Tên khu"] = khu_match.group(1)
+        
+        bon_match = re.search(r'"Tên bồn"\s*:\s*"([^"]+)"', chunk)
+        if bon_match: record["Tên bồn"] = bon_match.group(1)
+        
+        state_match = re.search(r'"Trạng thái"\s*:\s*"([^"]+)"', chunk)
+        if state_match: record["Trạng thái"] = state_match.group(1)
+        
+        ec_req_match = re.search(r'"EC yêu cầu"\s*:\s*"([^"]+)"', chunk)
+        if ec_req_match: record["EC yêu cầu"] = ec_req_match.group(1)
+        
+        tbec_match = re.search(r'"TBEC"\s*:\s*"([^"]+)"', chunk)
+        if tbec_match: record["TBEC"] = tbec_match.group(1)
+        
+        tbph_match = re.search(r'"TBPH"\s*:\s*"([^"]+)"', chunk)
+        if tbph_match: record["TBPH"] = tbph_match.group(1)
+        
+        if record:
+            records.append(record)
+            
+    if records:
+        return records
+        
+    raise Exception("File log bị hỏng cấu trúc quá nặng, không thể trích xuất dữ liệu tự động.")
 
 def process_data(file_content, target_area, gap_limit, min_season_days):
     try:
@@ -57,6 +76,12 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
         return None, f"Lỗi đọc file log: {e}"
 
     needed_cols = ["Thời gian", "Tên khu", "TBEC", "TBPH", "Trạng thái"]
+    
+    # Kiểm tra xem file có đủ cột không (phòng trường hợp regex không quét được)
+    missing_cols = [c for c in needed_cols if c not in df.columns]
+    if missing_cols:
+        return None, f"Dữ liệu thiếu các cột cơ bản: {', '.join(missing_cols)}"
+        
     df = df.select(needed_cols).filter(pl.col("Tên khu").str.contains(target_area.upper()))
     
     if df.is_empty():
@@ -100,7 +125,6 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
     ])
     daily = daily.with_columns(pl.col("is_new_season").cum_sum().alias("s_id"))
 
-    # Mapping s_id về df_pairs để xài cho việc tra cứu
     df_pairs = df_pairs.join(daily.select(["Date", "s_id"]), on="Date")
 
     seasons = daily.group_by("s_id").agg([
@@ -171,7 +195,6 @@ if uploaded_file:
                         ((pl.col("Date") - season_start).dt.total_days() + 1).alias("Ngày thứ")
                     ])
                     
-                    # BIỂU ĐỒ SỐ LẦN TƯỚI
                     fig_season_turns = px.bar(
                         daily_stats.to_pandas(), 
                         x="Ngày thứ", 
@@ -185,7 +208,6 @@ if uploaded_file:
                     fig_season_turns.update_layout(xaxis_title="Ngày thứ trong Vụ", yaxis_title="Số lần tưới")
                     st.plotly_chart(fig_season_turns, use_container_width=True)
                     
-                    # BẢNG THỐNG KÊ CHI TIẾT
                     daily_stats_display = daily_stats.select([
                         "Ngày thứ", "Date", "Số lần tưới", "Thời gian tưới TB (giây)", "TBEC", "TBPH"
                     ]).rename({"Date": "Ngày thực tế"})
@@ -223,26 +245,32 @@ if uploaded_file:
                         if df_cp_filtered.is_empty():
                             st.warning(f"Không tìm thấy dữ liệu châm phân cho bồn: {target_tank}")
                         else:
+                            # Lọc CHỈ LẤY dòng có "Trạng thái: Bật" để không tính lặp dữ liệu của 1 chu kỳ Bật/Tắt
+                            if "Trạng thái" in df_cp_filtered.columns:
+                                df_cp_filtered = df_cp_filtered.filter(pl.col("Trạng thái") == "Bật")
+                                
                             df_cp_clean = df_cp_filtered.with_columns([
                                 pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S").dt.date().alias("Date"),
-                                pl.col("EC yêu cầu").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False)
+                                # EC yêu cầu 150 -> 1.50 (Chia 100 để trả về đơn vị đo lường thực tế)
+                                (pl.col("EC yêu cầu").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False) / 100).alias("EC_Yeu_Cau_Thuc_Te")
                             ])
                             
                             df_cp_daily = df_cp_clean.group_by("Date").agg([
-                                pl.col("EC yêu cầu").mean().round(2).alias("Trung bình EC yêu cầu")
+                                pl.col("EC_Yeu_Cau_Thuc_Te").mean().round(2).alias("Trung bình EC yêu cầu")
                             ]).sort("Date")
                             
-                            st.success(f"Đã xử lý thành công dữ liệu cho **{target_tank}**")
+                            st.success(f"Đã phân tích thành công dữ liệu châm phân cho **{target_tank}**")
                             
                             fig_cp = px.line(df_cp_daily.to_pandas(), x="Date", y="Trung bình EC yêu cầu", 
-                                             title=f"Biểu đồ EC Yêu cầu trung bình theo ngày - {target_tank}",
+                                             title=f"Biểu đồ mức EC mục tiêu trung bình theo ngày - {target_tank}",
                                              markers=True)
+                            fig_cp.update_layout(yaxis_title="Mức EC Yêu cầu (mS/cm)")
                             st.plotly_chart(fig_cp, use_container_width=True)
                             
                             st.write("Bảng thống kê chi tiết:")
                             st.dataframe(df_cp_daily, use_container_width=True, hide_index=True)
                             
                 except Exception as e:
-                    st.error(f"Lỗi xử lý file châm phân: {e}")
+                    st.error(f"Lỗi xử lý hệ thống: {e}")
     else:
         st.error(msg)
