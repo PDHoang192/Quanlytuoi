@@ -171,61 +171,62 @@ if uploaded_file:
             st.table(final_report)
 
         with tab2:
-            st.subheader(f"Thống kê chi tiết từng ngày tưới - Khu {target_area}")
-            
-            if not seasons.is_empty():
-                season_list = seasons.to_dicts()
-                season_names = [f"Vụ {i+1} ({s['Start']} đến {s['End']})" for i, s in enumerate(season_list)]
-                
-                selected_season_name = st.selectbox("Chọn Vụ để xem chi tiết:", options=season_names)
-                
-                selected_idx = season_names.index(selected_season_name)
-                selected_s_id = season_list[selected_idx]['s_id']
-                season_start = season_list[selected_idx]['Start']
-                
-                df_season = df_p.filter(pl.col("s_id") == selected_s_id)
-                
-                if not df_season.is_empty():
-                    daily_stats = df_season.group_by("Date").agg([
-                        pl.count().alias("Số lần tưới"),
-                        pl.col("duration_s").mean().round(0).alias("Thời gian tưới TB (giây)"),
-                        pl.col("val_ec_goc").mean().round(2).alias("TBEC"),
-                        pl.col("val_ph_goc").mean().round(2).alias("TBPH")
-                    ]).sort("Date")
-                    
-                    daily_stats = daily_stats.with_columns([
-                        ((pl.col("Date") - season_start).dt.total_days() + 1).alias("Ngày thứ")
-                    ])
-                    
-                    # BIỂU ĐỒ CỘT DỌC (Vertical Bar Chart)
-                    fig_season_turns = px.bar(
-                        daily_stats.to_pandas(), 
-                        x="Ngày thứ",         # Trục X dàn trải theo Ngày thứ
-                        y="Số lần tưới",      # Trục Y thể hiện Số lần tưới
-                        title=f"Biểu đồ Số lần tưới theo ngày - {selected_season_name}",
-                        text="Số lần tưới",
-                        color="Số lần tưới",
-                        color_continuous_scale="Blues"
-                    )
-                    fig_season_turns.update_traces(textposition='outside')
-                    fig_season_turns.update_layout(
-                        xaxis_title="Ngày thứ trong Vụ", 
-                        yaxis_title="Số lần tưới",
-                        # Ép trục X hiển thị lần lượt từ trái sang phải, không xáo trộn
-                        xaxis=dict(type='category') 
-                    )
-                    st.plotly_chart(fig_season_turns, use_container_width=True)
-                    
-                    daily_stats_display = daily_stats.select([
-                        "Ngày thứ", "Date", "Số lần tưới", "Thời gian tưới TB (giây)", "TBEC", "TBPH"
-                    ]).rename({"Date": "Ngày thực tế"})
-                    
-                    st.write("Bảng dữ liệu chi tiết:")
-                    st.dataframe(daily_stats_display, use_container_width=True, hide_index=True)
-                else:
-                    st.info("Không có dữ liệu chi tiết cho vụ này.")
-            else:
-                st.warning("Chưa có dữ liệu vụ canh tác nào đạt điều kiện.")
+            st.subheader(f"Thống kê chi tiết từng ngày tưới - Khu {target_area}")
+            
+            if not seasons.is_empty():
+                season_list = seasons.to_dicts()
+                season_names = [f"Vụ {i+1} ({s['Start']} đến {s['End']})" for i, s in enumerate(season_list)]
+                
+                selected_season_name = st.selectbox("Chọn Vụ để xem chi tiết:", options=season_names)
+                
+                selected_idx = season_names.index(selected_season_name)
+                selected_s_id = season_list[selected_idx]['s_id']
+                season_start = season_list[selected_idx]['Start']
+                
+                df_season = df_p.filter(pl.col("s_id") == selected_s_id)
+                
+                if not df_season.is_empty():
+                    daily_stats = df_season.group_by("Date").agg([
+                        pl.count().alias("Số lần tưới"),
+                        pl.col("duration_s").mean().round(0).alias("Thời gian tưới TB (giây)"),
+                        pl.col("val_ec_goc").mean().round(2).alias("TBEC"),
+                        pl.col("val_ph_goc").mean().round(2).alias("TBPH")
+                    ]).sort("Date")
+                    
+                    daily_stats = daily_stats.with_columns([
+                        ((pl.col("Date") - season_start).dt.total_days() + 1).alias("Ngày thứ")
+                    ])
+                    
+                    # BIỂU ĐỒ CỘT NGANG (Horizontal Bar Chart)
+                    fig_season_turns = px.bar(
+                        daily_stats.to_pandas(), 
+                        x="Số lần tưới",      # Đổi X thành số lần tưới
+                        y="Ngày thứ",         # Đổi Y thành Ngày thứ
+                        orientation='h',      # Thuộc tính xoay ngang
+                        title=f"Biểu đồ Số lần tưới theo ngày - {selected_season_name}",
+                        text="Số lần tưới",
+                        color="Số lần tưới",
+                        color_continuous_scale="Blues"
+                    )
+                    fig_season_turns.update_traces(textposition='outside')
+                    fig_season_turns.update_layout(
+                        xaxis_title="Số lần tưới", 
+                        yaxis_title="Ngày thứ trong Vụ",
+                        # Ép trục Y theo Category và đảo ngược để ngày 1 nằm trên cùng
+                        yaxis=dict(type='category', autorange="reversed") 
+                    )
+                    st.plotly_chart(fig_season_turns, use_container_width=True)
+                    
+                    daily_stats_display = daily_stats.select([
+                        "Ngày thứ", "Date", "Số lần tưới", "Thời gian tưới TB (giây)", "TBEC", "TBPH"
+                    ]).rename({"Date": "Ngày thực tế"})
+                    
+                    st.write("Bảng dữ liệu chi tiết:")
+                    st.dataframe(daily_stats_display, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Không có dữ liệu chi tiết cho vụ này.")
+            else:
+                st.warning("Chưa có dữ liệu vụ canh tác nào đạt điều kiện."). 
 
         with tab3:
             st.subheader("Phân tích dữ liệu châm phân (EC Yêu Cầu)")
