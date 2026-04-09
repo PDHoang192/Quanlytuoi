@@ -5,87 +5,76 @@ import re
 import plotly.express as px
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Hệ Thống Phân Tích Tưới Chuyên Sâu", layout="wide", page_icon="🌱")
+st.set_page_config(page_title="Hệ Thống Phân Tích Tưới Đa Nguồn", layout="wide", page_icon="🚜")
 
-# --- HÀM ĐỌC JSON SIÊU BỀN BỈ (BULLETPROOF JSON PARSER) ---
-def robust_json_parser(file_content):
+# --- HÀM XỬ LÝ DỮ LIỆU THÔ (JSON & TXT) ---
+def parse_raw_log(file_content):
     """
-    Hàm này sẽ cố gắng đọc JSON bằng nhiều cách: 
-    1. Parse toàn bộ (chuẩn)
-    2. Parse từng dòng (JSONL)
-    3. Tách các object dính liền nhau bằng Regex
+    Hàm xử lý thông minh: 
+    - Đọc JSON chuẩn
+    - Đọc TXT chứa các object JSON dính liền hoặc xuống dòng
     """
     raw_text = file_content.getvalue().decode("utf-8").strip()
     
-    # Cách 1: Thử parse toàn bộ file theo chuẩn danh sách [...]
+    # Thử parse toàn bộ như JSON chuẩn
     try:
         data = json.loads(raw_text)
-        return data if isinstance(data, list) else [data]
+        if isinstance(data, list): return data
+        return [data]
     except:
         pass
 
-    # Cách 2: Parse từng dòng (phổ biến với log IoT)
+    # Nếu thất bại, xử lý theo dạng log thô (TXT)
     data = []
-    lines = raw_text.split('\n')
-    for line in lines:
-        line = line.strip().rstrip(',') # Xóa khoảng trắng và dấu phẩy thừa ở cuối dòng
-        if not line: continue
+    # Tìm tất cả các khối {...} bằng Regex để tránh lỗi định dạng file TXT
+    matches = re.findall(r'\{.*?\}', raw_text, re.DOTALL)
+    for m in matches:
         try:
-            data.append(json.loads(line))
+            # Làm sạch chuỗi trước khi parse
+            clean_m = m.replace('\n', '').replace('\r', '')
+            data.append(json.loads(clean_m))
         except:
-            # Cách 3: Nếu một dòng chứa nhiều object dính nhau {...}{...}
-            # Sử dụng Regex để tìm các khối nằm trong cặp ngoặc nhọn
-            matches = re.findall(r'\{.*?\}', line)
-            for m in matches:
-                try:
-                    data.append(json.loads(m))
-                except:
-                    continue
+            continue
     return data
 
-def load_multiple_files(uploaded_files, target_area=None):
+def load_data(uploaded_files, is_drip=False, target_area=None):
     if not uploaded_files:
         return None
     
     all_records = []
-    for file in uploaded_files:
-        records = robust_json_parser(file)
-        if records:
-            all_records.extend(records)
-            
+    for f in uploaded_files:
+        records = parse_raw_log(f)
+        all_records.extend(records)
+        
     if not all_records:
         return None
     
-    # Chuyển thành DataFrame Polars
     df = pl.DataFrame(all_records)
-    
-    # Chuẩn hóa các cột
     cols = df.columns
-    # Tìm cột EC Yêu Cầu (có thể tên khác tùy máy)
-    target_ec_col = next((c for c in ["EC_YeuCau", "Yêu Cầu EC", "EC_Setpoint", "SET_EC"] if c in cols), None)
 
+    # Tiền xử lý dữ liệu số và thời gian
     df = df.with_columns([
         pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S").alias("dt"),
         pl.col("TBEC").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False),
-        pl.col("TBPH").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False),
+        pl.col("TBPH").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False)
     ])
-    
-    if target_ec_col:
-        df = df.with_columns(
-            pl.col(target_ec_col).cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False).alias("ec_target")
-        )
-    else:
-        # Nếu không có cột yêu cầu, lấy trung bình EC để giả lập (hoặc để trống)
-        df = df.with_columns(pl.col("TBEC").alias("ec_target"))
 
-    if target_area:
-        # Lọc theo khu vực (Case-insensitive)
+    # Nếu là file châm phân, tìm cột EC Yêu Cầu
+    if not is_drip:
+        target_ec_col = next((c for c in ["EC_YeuCau", "Yêu Cầu EC", "EC_Setpoint", "SET_EC"] if c in cols), None)
+        if target_ec_col:
+            df = df.with_columns(pl.col(target_ec_col).cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False).alias("ec_target"))
+        else:
+            df = df.with_columns(pl.col("TBEC").alias("ec_target"))
+    
+    # Nếu là file nhỏ giọt, lọc theo khu vực
+    if is_drip and target_area:
         df = df.filter(pl.col("Tên khu").str.to_uppercase().str.contains(target_area.upper()))
         
     return df.sort("dt")
 
-# --- GIỮ NGUYÊN LOGIC TÍNH TOÁN VÀ GIAO DIỆN ---
-def get_irrigation_events(df):
+# --- LOGIC GHÉP CẶP BẬT/TẮT ---
+def get_events(df):
     df_on = df.filter(pl.col("Trạng thái") == "Bật")
     df_off = df.filter(pl.col("Trạng thái") == "Tắt").select([
         pl.col("dt").alias("dt_end"),
@@ -97,69 +86,92 @@ def get_irrigation_events(df):
         ((pl.col("dt_end") - pl.col("dt")).dt.total_seconds()).alias("duration_s"),
         pl.col("dt").dt.date().alias("Date")
     ])
-    return df_pairs.filter((pl.col("duration_s") >= 10) & (pl.col("duration_s") < 1200))
+    return df_pairs.filter((pl.col("duration_s") >= 15) & (pl.col("duration_s") < 900))
 
-# --- GIAO DIỆN ---
-st.title("🚜 Hệ Thống Phân Tích Tưới Đa Nguồn (Multi-JSON)")
+# --- GIAO DIỆN CHÍNH ---
+st.title("🌱 Phân Tích Tưới: Kết Hợp JSON & TXT")
 
 with st.sidebar:
-    st.header("Cấu Hình")
-    area = st.text_input("Khu vực mục tiêu:", "ANT-2").upper()
+    st.header("Cấu Hình Hệ Thống")
+    area_name = st.text_input("Khu vực cần xem:", "ANT-2").upper()
     
+    st.divider()
     st.subheader("1. File Châm Phân (JSON)")
-    files_fert = st.file_uploader("Tải log Châm phân", type=['json'], accept_multiple_files=True, key="fert_json")
+    st.info("Dùng để xác định EC Yêu Cầu và chia giai đoạn.")
+    files_fert = st.file_uploader("Upload file .json", type=['json'], accept_multiple_files=True)
     
-    st.subheader("2. File Nhỏ Giọt (JSON)")
-    files_drip = st.file_uploader("Tải log Nhỏ giọt", type=['json'], accept_multiple_files=True, key="drip_json")
+    st.subheader("2. File Nhỏ Giọt (TXT)")
+    st.info("Dùng để phân tích lịch tưới thực tế và mùa vụ.")
+    files_drip = st.file_uploader("Upload file .txt", type=['txt'], accept_multiple_files=True)
     
-    gap_limit = st.slider("Số ngày nghỉ để ngắt vụ:", 1, 7, 2)
+    st.divider()
+    gap_limit = st.slider("Ngày nghỉ ngắt vụ:", 1, 10, 2)
 
+# --- XỬ LÝ VÀ HIỂN THỊ ---
 if files_fert and files_drip:
-    with st.spinner('Đang giải mã JSON...'):
-        df_fert_raw = load_multiple_files(files_fert)
-        df_drip_raw = load_multiple_files(files_drip, target_area=area)
+    with st.spinner('Đang đồng bộ dữ liệu...'):
+        df_fert = load_data(files_fert, is_drip=False)
+        df_drip = load_data(files_drip, is_drip=True, target_area=area_name)
 
-    if df_fert_raw is not None and df_drip_raw is not None:
-        # Xử lý Nhỏ giọt (Thực tế)
-        df_events = get_irrigation_events(df_drip_raw)
-        daily_stats = df_events.group_by("Date").agg([
+    if df_fert is not None and df_drip is not None:
+        # Xử lý mùa vụ từ file Nhỏ Giọt (TXT)
+        events = get_events(df_drip)
+        daily_drip = events.group_by("Date").agg([
             pl.count().alias("turns"),
             pl.col("duration_s").mean().round(0).alias("avg_duration"),
             pl.col("TBEC").mean().round(2).alias("avg_ec_real")
         ]).sort("Date")
 
-        # Xử lý Châm phân (Yêu cầu)
-        daily_setpoint = df_fert_raw.with_columns(pl.col("dt").dt.date().alias("Date")) \
+        # Xác định Vụ/Nghỉ
+        daily_drip = daily_drip.with_columns([
+            (pl.col("Date").diff().dt.total_days() > gap_limit).fill_null(False).alias("is_new_season")
+        ])
+        daily_drip = daily_drip.with_columns(pl.col("is_new_season").cum_sum().alias("s_id"))
+
+        # Lấy EC Yêu cầu từ file Châm Phân (JSON)
+        daily_fert = df_fert.with_columns(pl.col("dt").dt.date().alias("Date")) \
             .group_by("Date").agg(pl.col("ec_target").median().alias("ec_target")) \
             .sort("Date")
 
-        final_daily = daily_stats.join(daily_setpoint, on="Date", how="left")
+        # Hợp nhất 2 nguồn dữ liệu
+        final_df = daily_drip.join(daily_fert, on="Date", how="left")
 
-        tab1, tab2 = st.tabs(["📅 Quản lý Vụ Mùa", "📈 Biểu đồ EC & Vận hành"])
+        # --- TABS ---
+        tab_vụ, tab_đối_soát = st.tabs(["📅 Quản lý Vụ Mùa & Nghỉ", "📊 Đối soát EC & Vận hành"])
 
-        with tab1:
-            # Tính toán mùa vụ
-            daily_stats = daily_stats.with_columns([(pl.col("Date").diff().dt.total_days() > gap_limit).fill_null(False).alias("is_new")])
-            daily_stats = daily_stats.with_columns(pl.col("is_new").cum_sum().alias("s_id"))
-            
-            seasons = daily_stats.group_by("s_id").agg([
+        with tab_vụ:
+            st.subheader(f"Chu kỳ canh tác khu {area_name}")
+            seasons = daily_drip.group_by("s_id").agg([
                 pl.col("Date").min().alias("Start"),
                 pl.col("Date").max().alias("End"),
                 ((pl.col("Date").max() - pl.col("Date").min()).dt.total_days() + 1).alias("Days")
             ]).sort("Start")
             
-            st.table(seasons.to_pandas())
+            # Tạo bảng báo cáo Vụ/Nghỉ
+            report = []
+            s_list = seasons.to_dicts()
+            for i, s in enumerate(s_list):
+                report.append({"Giai đoạn": f"VỤ {i+1}", "Bắt đầu": s["Start"], "Kết thúc": s["End"], "Số ngày": s["Days"]})
+                if i < len(s_list) - 1:
+                    gap = (s_list[i+1]["Start"] - s["End"]).days - 1
+                    if gap > 0:
+                        report.append({"Giai đoạn": "🟢 NGHỈ ĐẤT", "Bắt đầu": s["End"] + timedelta(days=1), 
+                                       "Kết thúc": s_list[i+1]["Start"] - timedelta(days=1), "Số ngày": gap})
+            st.table(report)
 
-        with tab2:
-            st.subheader(f"Đối soát EC Yêu Cầu vs Thực Tế - Khu {area}")
-            fig = px.line(final_daily.to_pandas(), x="Date", y=["ec_target", "avg_ec_real"],
-                         labels={"value": "EC (mS/cm)", "variable": "Loại EC"},
-                         title="Sự sai lệch giữa cài đặt và thực tế khu vực", markers=True)
+        with tab_đối_soát:
+            st.subheader(f"So sánh EC Target (JSON) vs EC Thực tế (TXT) - {area_name}")
+            fig = px.line(final_df.to_pandas(), x="Date", y=["ec_target", "avg_ec_real"],
+                         labels={"value": "EC (mS/cm)", "variable": "Nguồn dữ liệu"},
+                         markers=True, title="Độ chính xác của hệ thống châm phân")
             st.plotly_chart(fig, use_container_width=True)
             
-            st.subheader("Nhật ký vận hành")
-            st.dataframe(final_daily.to_pandas(), use_container_width=True)
+            st.divider()
+            st.subheader("Chi tiết vận hành hàng ngày")
+            st.dataframe(final_df.select([
+                "Date", "ec_target", "avg_ec_real", "turns", "avg_duration"
+            ]).to_pandas(), use_container_width=True)
     else:
-        st.error("Không tìm thấy dữ liệu hợp lệ trong các file JSON đã tải lên.")
+        st.error("Lỗi: Không thể tìm thấy dữ liệu phù hợp trong các file đã tải.")
 else:
-    st.info("Vui lòng tải các file log định dạng JSON vào các mục tương ứng ở Sidebar.")
+    st.info("Vui lòng tải đầy đủ file Châm Phân (.json) và Nhỏ Giọt (.txt) để bắt đầu phân tích.")
