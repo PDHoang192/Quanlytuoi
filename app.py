@@ -13,12 +13,9 @@ def parse_log_file(file_content):
     raw_text = file_content.getvalue().decode("utf-8").strip()
     
     # 1. Thử tiền xử lý và đọc bằng JSON chuẩn
-    # Sửa lỗi thiếu dấu phẩy giữa các thuộc tính (VD: "Key1":"Val1" \n "Key2":"Val2")
     raw_text_clean = re.sub(r'"\s*\n\s*"', '",\n"', raw_text)
-    # Sửa lỗi dấu phẩy thừa ở cuối object
     raw_text_clean = re.sub(r',\s*\}', '}', raw_text_clean)
     raw_text_clean = re.sub(r',\s*\]', ']', raw_text_clean)
-    # Sửa lỗi thiếu dấu phẩy giữa các object
     raw_text_clean = re.sub(r'\}\s*\{', '},{', raw_text_clean)
     
     json_text = raw_text_clean if raw_text_clean.startswith('[') else f"[{raw_text_clean}]"
@@ -28,46 +25,45 @@ def parse_log_file(file_content):
     except Exception:
         pass
         
-    # 2. Thử đọc bằng AST (Linh hoạt hơn với dấu phẩy thừa)
+    # 2. Thử đọc bằng AST 
     try:
         py_text = json_text.replace('true', 'True').replace('false', 'False').replace('null', 'None')
         return ast.literal_eval(py_text)
     except Exception:
         pass
 
-    # 3. Phương án cuối cùng: Quét Regex trích xuất trực tiếp dữ liệu (Bất chấp mọi lỗi định dạng)
+    # 3. Phương án cuối cùng: Quét Regex trích xuất trực tiếp dữ liệu (Đã nâng cấp)
     records = []
-    # Phân tách file bằng dấu '{'. Do mọi object JSON đều bắt đầu bằng '{', 
-    # cách này đảm bảo không bỏ sót bất kỳ dòng log nào từ đầu đến cuối file.
     chunks = raw_text.split('{') 
     
     for chunk in chunks:
         if not chunk.strip(): continue
         record = {}
         
-        # Bắt buộc phải có Thời gian thì mới tính là 1 record hợp lệ
-        time_match = re.search(r'"Thời gian"\s*:\s*"([^"]+)"', chunk)
+        # Cập nhật Regex để bắt được cả giá trị CÓ và KHÔNG CÓ dấu ngoặc kép
+        time_match = re.search(r'"Thời gian"\s*:\s*"?([^",}]+)"?', chunk)
         if time_match: 
-            record["Thời gian"] = time_match.group(1)
+            record["Thời gian"] = time_match.group(1).strip('"')
         else:
             continue
             
-        khu_match = re.search(r'"Tên khu"\s*:\s*"([^"]+)"', chunk)
-        if khu_match: record["Tên khu"] = khu_match.group(1)
+        khu_match = re.search(r'"Tên khu"\s*:\s*"?([^",}]+)"?', chunk)
+        if khu_match: record["Tên khu"] = khu_match.group(1).strip('"')
         
-        bon_match = re.search(r'"Tên bồn"\s*:\s*"([^"]+)"', chunk)
-        if bon_match: record["Tên bồn"] = bon_match.group(1)
+        bon_match = re.search(r'"Tên bồn"\s*:\s*"?([^",}]+)"?', chunk)
+        if bon_match: record["Tên bồn"] = bon_match.group(1).strip('"')
         
-        state_match = re.search(r'"Trạng thái"\s*:\s*"([^"]+)"', chunk)
-        if state_match: record["Trạng thái"] = state_match.group(1)
+        state_match = re.search(r'"Trạng thái"\s*:\s*"?([^",}]+)"?', chunk)
+        if state_match: record["Trạng thái"] = state_match.group(1).strip('"')
         
-        ec_req_match = re.search(r'"EC yêu cầu"\s*:\s*"([^"]+)"', chunk)
+        # Các thông số số học thường bị mất ngoặc kép trong các bản log cũ
+        ec_req_match = re.search(r'"EC yêu cầu"\s*:\s*"?([^",}\s]+)"?', chunk)
         if ec_req_match: record["EC yêu cầu"] = ec_req_match.group(1)
         
-        tbec_match = re.search(r'"TBEC"\s*:\s*"([^"]+)"', chunk)
+        tbec_match = re.search(r'"TBEC"\s*:\s*"?([^",}\s]+)"?', chunk)
         if tbec_match: record["TBEC"] = tbec_match.group(1)
         
-        tbph_match = re.search(r'"TBPH"\s*:\s*"([^"]+)"', chunk)
+        tbph_match = re.search(r'"TBPH"\s*:\s*"?([^",}\s]+)"?', chunk)
         if tbph_match: record["TBPH"] = tbph_match.group(1)
         
         records.append(record)
@@ -85,12 +81,10 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
         return None, f"Lỗi đọc file log: {e}"
 
     needed_cols = ["Thời gian", "Tên khu", "TBEC", "TBPH", "Trạng thái"]
-    
     missing_cols = [c for c in needed_cols if c not in df.columns]
     if missing_cols:
         return None, f"Dữ liệu thiếu các cột cơ bản: {', '.join(missing_cols)}"
         
-    # Lọc khu vực (Không phân biệt hoa thường)
     df = df.select(needed_cols).filter(
         pl.col("Tên khu").str.to_uppercase().str.contains(target_area.upper())
     )
@@ -104,19 +98,12 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
         pl.col("TBPH").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False)
     ]).drop_nulls(subset=["dt"]).sort("dt")
 
-    # Chuẩn hóa trạng thái (Bật/Tắt) tránh lỗi gõ phím khoảng trắng hoặc chữ thường
     df_on = df.filter(pl.col("Trạng thái").str.to_uppercase().str.strip_chars() == "BẬT")
     df_off = df.filter(pl.col("Trạng thái").str.to_uppercase().str.strip_chars() == "TẮT").with_columns(
         pl.col("dt").alias("dt_end")
     )
 
-    df_pairs = df_on.join_asof(
-        df_off,
-        on="dt",
-        strategy="forward", 
-        suffix="_end"
-    )
-
+    df_pairs = df_on.join_asof(df_off, on="dt", strategy="forward", suffix="_end")
     df_pairs = df_pairs.filter(pl.col("dt_end").is_not_null())
 
     df_pairs = df_pairs.with_columns([
@@ -210,17 +197,24 @@ if uploaded_file:
                         ((pl.col("Date") - season_start).dt.total_days() + 1).alias("Ngày thứ")
                     ])
                     
+                    # BIỂU ĐỒ CỘT NGANG (Horizontal Bar Chart)
                     fig_season_turns = px.bar(
                         daily_stats.to_pandas(), 
-                        x="Ngày thứ", 
-                        y="Số lần tưới",
+                        x="Số lần tưới",      # Đổi X thành số lần tưới
+                        y="Ngày thứ",         # Đổi Y thành Ngày thứ
+                        orientation='h',      # Thuộc tính xoay ngang
                         title=f"Biểu đồ Số lần tưới theo ngày - {selected_season_name}",
                         text="Số lần tưới",
                         color="Số lần tưới",
                         color_continuous_scale="Blues"
                     )
                     fig_season_turns.update_traces(textposition='outside')
-                    fig_season_turns.update_layout(xaxis_title="Ngày thứ trong Vụ", yaxis_title="Số lần tưới")
+                    fig_season_turns.update_layout(
+                        xaxis_title="Số lần tưới", 
+                        yaxis_title="Ngày thứ trong Vụ",
+                        # Ép trục Y theo Category và đảo ngược để ngày 1 nằm trên cùng
+                        yaxis=dict(type='category', autorange="reversed") 
+                    )
                     st.plotly_chart(fig_season_turns, use_container_width=True)
                     
                     daily_stats_display = daily_stats.select([
@@ -255,7 +249,6 @@ if uploaded_file:
                     elif not tank_col:
                         st.error("File không hợp lệ: Không tìm thấy trường 'Tên bồn' hoặc 'Tên khu'.")
                     else:
-                        # Lọc bồn (Không phân biệt hoa thường)
                         df_cp_filtered = df_cp.filter(
                             pl.col(tank_col).str.to_uppercase().str.contains(target_tank)
                         )
@@ -263,12 +256,9 @@ if uploaded_file:
                         if df_cp_filtered.is_empty():
                             st.warning(f"Không tìm thấy dữ liệu châm phân cho bồn: {target_tank}")
                         else:
-                            # Lọc chuẩn hóa trạng thái "Bật"
-                            if "Trạng thái" in df_cp_filtered.columns:
-                                df_cp_filtered = df_cp_filtered.filter(
-                                    pl.col("Trạng thái").str.to_uppercase().str.strip_chars() == "BẬT"
-                                )
-                                
+                            # Đã loại bỏ điều kiện: filter(Trạng thái == "BẬT") 
+                            # vì EC yêu cầu thường được log định kỳ hoặc thụ động, việc lọc sẽ làm mất dữ liệu.
+                            
                             df_cp_clean = df_cp_filtered.with_columns([
                                 pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S", strict=False).dt.date().alias("Date"),
                                 (pl.col("EC yêu cầu").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False) / 100).alias("EC_Yeu_Cau_Thuc_Te")
