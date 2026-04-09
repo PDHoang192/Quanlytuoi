@@ -8,25 +8,31 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Hệ Thống Quản Lý Tưới", layout="wide", page_icon="🌱")
 
-# Hàm đọc file JSON chống lỗi (Tự động fix dấu phẩy thừa hoặc nháy đơn)
+# Hàm đọc file JSON chống lỗi (Tự động fix dấu phẩy thừa, thiếu phẩy hoặc nháy đơn)
 def parse_log_file(file_content):
     raw_text = file_content.getvalue().decode("utf-8").strip()
+    
+    # Thử đọc chuẩn trước
     try:
         return json.loads(raw_text)
     except json.JSONDecodeError:
-        pass # Nếu lỗi JSON chuẩn, thử các bước fix bên dưới
+        pass 
         
+    # Xử lý bọc mảng nếu thiếu
     if not raw_text.startswith('['):
-        raw_text = "[" + raw_text.replace('}{', '},{').replace('}\n{', '},{') + "]"
+        raw_text = "[" + raw_text + "]"
         
-    # Fix lỗi phổ biến: Dấu phẩy thừa ở cuối mảng/object (Nguyên nhân gây lỗi ở hình của bạn)
-    raw_text = re.sub(r',\s*]', ']', raw_text)
-    raw_text = re.sub(r',\s*}', '}', raw_text)
+    # Fix các lỗi định dạng JSON phổ biến bằng Regex
+    # 1. Thêm dấu phẩy bị thiếu giữa các object (Lỗi Expecting ',' delimiter)
+    raw_text = re.sub(r'\}\s*\{', '},{', raw_text)
+    # 2. Xóa dấu phẩy thừa ở cuối mảng/object
+    raw_text = re.sub(r',\s*\]', ']', raw_text)
+    raw_text = re.sub(r',\s*\}', '}', raw_text)
     
     try:
         return json.loads(raw_text)
     except json.JSONDecodeError as e:
-        # Phương án cuối cùng: Đọc từng dòng bằng ast.literal_eval (xử lý nháy đơn python)
+        # Phương án cuối cùng: Đọc từng dòng bằng json.loads hoặc ast.literal_eval
         data = []
         for line in file_content.getvalue().decode("utf-8").strip().split('\n'):
             line = line.strip()
@@ -41,14 +47,14 @@ def parse_log_file(file_content):
                     pass
         if data:
             return data
-        raise Exception(f"Không thể đọc cấu trúc file. Chi tiết lỗi: {e}")
+        raise Exception(f"Không thể tự động sửa lỗi cấu trúc file. Lỗi gốc: {e}")
 
 def process_data(file_content, target_area, gap_limit, min_season_days):
     try:
         data = parse_log_file(file_content)
         df = pl.DataFrame(data)
     except Exception as e:
-        return None, f"Lỗi đọc file log tưới: {e}"
+        return None, f"Lỗi đọc file log: {e}"
 
     needed_cols = ["Thời gian", "Tên khu", "TBEC", "TBPH", "Trạng thái"]
     df = df.select(needed_cols).filter(pl.col("Tên khu").str.contains(target_area.upper()))
@@ -143,21 +149,17 @@ if uploaded_file:
             
             if not seasons.is_empty():
                 season_list = seasons.to_dicts()
-                # Tạo danh sách tên vụ để chọn
                 season_names = [f"Vụ {i+1} ({s['Start']} đến {s['End']})" for i, s in enumerate(season_list)]
                 
                 selected_season_name = st.selectbox("Chọn Vụ để xem chi tiết:", options=season_names)
                 
-                # Tìm s_id và ngày bắt đầu của vụ đã chọn
                 selected_idx = season_names.index(selected_season_name)
                 selected_s_id = season_list[selected_idx]['s_id']
                 season_start = season_list[selected_idx]['Start']
                 
-                # Lọc dữ liệu df_pairs theo s_id của vụ
                 df_season = df_p.filter(pl.col("s_id") == selected_s_id)
                 
                 if not df_season.is_empty():
-                    # Gom nhóm theo ngày và tính toán các chỉ số
                     daily_stats = df_season.group_by("Date").agg([
                         pl.count().alias("Số lần tưới"),
                         pl.col("duration_s").mean().round(0).alias("Thời gian tưới TB (giây)"),
@@ -165,17 +167,31 @@ if uploaded_file:
                         pl.col("val_ph_goc").mean().round(2).alias("TBPH")
                     ]).sort("Date")
                     
-                    # Đánh số ngày thứ tự trong vụ
                     daily_stats = daily_stats.with_columns([
                         ((pl.col("Date") - season_start).dt.total_days() + 1).alias("Ngày thứ")
                     ])
                     
-                    # Sắp xếp lại thứ tự cột
-                    daily_stats = daily_stats.select([
+                    # BIỂU ĐỒ SỐ LẦN TƯỚI
+                    fig_season_turns = px.bar(
+                        daily_stats.to_pandas(), 
+                        x="Ngày thứ", 
+                        y="Số lần tưới",
+                        title=f"Biểu đồ Số lần tưới theo ngày - {selected_season_name}",
+                        text="Số lần tưới",
+                        color="Số lần tưới",
+                        color_continuous_scale="Blues"
+                    )
+                    fig_season_turns.update_traces(textposition='outside')
+                    fig_season_turns.update_layout(xaxis_title="Ngày thứ trong Vụ", yaxis_title="Số lần tưới")
+                    st.plotly_chart(fig_season_turns, use_container_width=True)
+                    
+                    # BẢNG THỐNG KÊ CHI TIẾT
+                    daily_stats_display = daily_stats.select([
                         "Ngày thứ", "Date", "Số lần tưới", "Thời gian tưới TB (giây)", "TBEC", "TBPH"
                     ]).rename({"Date": "Ngày thực tế"})
                     
-                    st.dataframe(daily_stats, use_container_width=True, hide_index=True)
+                    st.write("Bảng dữ liệu chi tiết:")
+                    st.dataframe(daily_stats_display, use_container_width=True, hide_index=True)
                 else:
                     st.info("Không có dữ liệu chi tiết cho vụ này.")
             else:
@@ -192,7 +208,6 @@ if uploaded_file:
 
             if uploaded_cp_file:
                 try:
-                    # Sử dụng hàm parse JSON siêu cấp để chống lỗi ngoặc nháy
                     data_cp = parse_log_file(uploaded_cp_file)
                     df_cp = pl.DataFrame(data_cp)
                     
