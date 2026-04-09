@@ -215,10 +215,6 @@ if uploaded_file:
                 st.info("Không có dữ liệu để hiển thị bảng chi tiết.")
 
 
-tab1, tab2, tab3, tab4 = st.tabs(["📋 Báo cáo Vụ & Nghỉ", "🔍 Tra cứu chi tiết đợt tưới", "🧪 Thống kê Châm Phân", "📈 Phân tích Giai đoạn"])
-
-        # ... (các tab 1, 2 giữ nguyên) ...
-
         with tab3:
             st.subheader("Phân tích dữ liệu châm phân (EC Yêu Cầu)")
             
@@ -359,6 +355,3 @@ tab1, tab2, tab3, tab4 = st.tabs(["📋 Báo cáo Vụ & Nghỉ", "🔍 Tra cứ
                     st.info("Không tìm thấy dữ liệu chi tiết cho vụ này.")
             else:
                 st.warning("Chưa có dữ liệu vụ canh tác.")
-
-    else:
-        st.error(msg)
