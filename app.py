@@ -295,9 +295,8 @@ if uploaded_file:
                         # Bảng chi tiết
                         st.write("Bảng thống kê chi tiết toàn bộ chu kỳ:")
                         st.dataframe(df_plot[["Ngày", "Trung bình EC yêu cầu"]], use_container_width=True, hide_index=True)
-
-                except Exception as e:
-                    st.error(f"Lỗi xử lý hệ thống: {e}")
+           
+            
             with tab4:
             st.subheader(f"Phân tích Giai đoạn Cây trồng - Khu {target_area}")
             
@@ -355,5 +354,9 @@ if uploaded_file:
                     st.info("Không tìm thấy dữ liệu chi tiết cho vụ này.")
             else:
                 st.warning("Chưa có dữ liệu vụ canh tác.")
+                
+                except Exception as e:
+                    st.error(f"Lỗi xử lý hệ thống: {e}")
+            
     else:
         st.error(msg)
