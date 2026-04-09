@@ -298,5 +298,62 @@ if uploaded_file:
 
                 except Exception as e:
                     st.error(f"Lỗi xử lý hệ thống: {e}")
+            with tab4:
+            st.subheader(f"Phân tích Giai đoạn Cây trồng - Khu {target_area}")
+            
+            if not seasons.is_empty():
+                season_list = seasons.to_dicts()
+                season_names = [f"Vụ {i+1} ({s['Start']} đến {s['End']})" for i, s in enumerate(season_list)]
+                selected_season_name = st.selectbox("Chọn Vụ để phân tích giai đoạn:", options=season_names, key="tab4_season_select")
+                
+                analysis_option = st.radio("Phân tích giai đoạn dựa trên:", ["Số lần tưới", "TBEC"], horizontal=True)
+                
+                selected_idx = season_names.index(selected_season_name)
+                selected_s_id = season_list[selected_idx]['s_id']
+                
+                # Lấy dữ liệu của vụ được chọn
+                df_season_analysis = df_p.filter(pl.col("s_id") == selected_s_id)
+                
+                if not df_season_analysis.is_empty():
+                    # Gom nhóm theo ngày để lấy thông số phân tích
+                    stage_data = df_season_analysis.group_by("Date").agg([
+                        pl.count().alias("Số lần tưới"),
+                        pl.col("val_ec_goc").mean().round(2).alias("TBEC")
+                    ]).sort("Date")
+                    
+                    # Xác định cột giá trị dựa trên option
+                    val_col = "Số lần tưới" if analysis_option == "Số lần tưới" else "TBEC"
+                    
+                    # Logic chia giai đoạn: Khi giá trị thay đổi so với ngày trước đó
+                    stage_data = stage_data.with_columns([
+                        (pl.col(val_col) != pl.col(val_col).shift(1)).fill_null(True).alias("is_new_stage")
+                    ])
+                    stage_data = stage_data.with_columns(pl.col("is_new_stage").cum_sum().alias("stage_id"))
+                    
+                    # Tổng hợp thông tin từng giai đoạn
+                    stages_summary = stage_data.group_by("stage_id").agg([
+                        pl.col("Date").min().alias("Bắt đầu"),
+                        pl.col("Date").max().alias("Kết thúc"),
+                        pl.col(val_col).first().alias("Giá trị duy trì"),
+                        pl.count().alias("Số ngày")
+                    ]).sort("Bắt đầu")
+                    
+                    # Hiển thị biểu đồ giai đoạn
+                    fig_stage = px.steppre(
+                        stage_data.to_pandas(), 
+                        x="Date", 
+                        y=val_col,
+                        title=f"Biến thiên {val_col} theo thời gian - {selected_season_name}",
+                        markers=True
+                    )
+                    st.plotly_chart(fig_stage, use_container_width=True)
+                    
+                    # Hiển thị bảng phân chia giai đoạn
+                    st.write(f"Danh sách các giai đoạn cây trồng (Dựa trên {analysis_option}):")
+                    st.dataframe(stages_summary.drop("stage_id"), use_container_width=True, hide_index=True)
+                else:
+                    st.info("Không tìm thấy dữ liệu chi tiết cho vụ này.")
+            else:
+                st.warning("Chưa có dữ liệu vụ canh tác.")
     else:
         st.error(msg)
