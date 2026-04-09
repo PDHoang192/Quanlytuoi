@@ -171,16 +171,34 @@ if uploaded_file:
             st.table(final_report)
 
         with tab2:
-            st.subheader(f"Thống kê vận hành khu {target_area}")
-            daily_min_2 = daily.filter(pl.col("turns") >= 2)
-            fig = px.bar(daily_min_2.to_pandas(), x="Date", y="turns", 
-                         title="Các ngày có tần suất tưới >= 2 lần/ngày",
-                         color="turns", color_continuous_scale="Viridis")
-            st.plotly_chart(fig, use_container_width=True)
+            st.subheader(f"Thống kê chi tiết từng ngày tưới - Khu {target_area}")
             
-            st.divider()
-            search_date = st.selectbox("Chọn ngày để xem chi tiết:", 
-                                      options=sorted(df_p["Date"].unique(), reverse=True))
+            if not seasons.is_empty():
+                season_list = seasons.to_dicts()
+                season_names = [f"Vụ {i+1} ({s['Start']} đến {s['End']})" for i, s in enumerate(season_list)]
+                
+                selected_season_name = st.selectbox("Chọn Vụ để xem chi tiết:", options=season_names)
+                
+                selected_idx = season_names.index(selected_season_name)
+                selected_s_id = season_list[selected_idx]['s_id']
+                season_start = season_list[selected_idx]['Start']
+                
+                df_season = df_p.filter(pl.col("s_id") == selected_s_id)
+                
+                if not df_season.is_empty():
+                    daily_stats = df_season.group_by("Date").agg([
+                        pl.count().alias("Số lần tưới"),
+                        pl.col("duration_s").mean().round(0).alias("Thời gian tưới TB (giây)"),
+                        pl.col("val_ec_goc").mean().round(2).alias("TBEC"),
+                        pl.col("val_ph_goc").mean().round(2).alias("TBPH")
+                    ]).sort("Date")
+                    
+                    # Chuyển đổi "Ngày thứ" thành dạng số nguyên (Int32) để Plotly không xếp nhầm
+                    daily_stats = daily_stats.with_columns([
+                        ((pl.col("Date") - season_start).dt.total_days() + 1).cast(pl.Int32).alias("Ngày thứ")
+                    ])
+                    
+                    df_plot = daily_stats.to_pandas().sort_values("Ngày thứ")
             
             if search_date:
                 # Hiển thị chính xác TBEC, TBPH
