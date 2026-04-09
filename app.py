@@ -217,4 +217,17 @@ if uploaded_file:
                                 pl.col("EC yêu cầu").mean().round(2).alias("Trung bình EC yêu cầu")
                             ]).sort("Date")
                             
-                            st.success(f"Đã xử lý thành công dữ liệu cho **{target_
+                            st.success(f"Đã xử lý thành công dữ liệu cho **{target_tank}**")
+                            
+                            fig_cp = px.line(df_cp_daily.to_pandas(), x="Date", y="Trung bình EC yêu cầu", 
+                                             title=f"Biểu đồ EC Yêu cầu trung bình theo ngày - {target_tank}",
+                                             markers=True)
+                            st.plotly_chart(fig_cp, use_container_width=True)
+                            
+                            st.write("Bảng thống kê chi tiết:")
+                            st.dataframe(df_cp_daily, use_container_width=True, hide_index=True)
+                            
+                except Exception as e:
+                    st.error(f"Lỗi xử lý file châm phân: {e}")
+    else:
+        st.error(msg)
