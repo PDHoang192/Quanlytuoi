@@ -314,7 +314,17 @@ if uploaded_file:
                 season_names = [f"Vụ {i+1} ({s['Start']} đến {s['End']})" for i, s in enumerate(season_list)]
                 selected_season_name = st.selectbox("Chọn Vụ để phân tích giai đoạn:", options=season_names, key="tab4_season_select")
                 
-                analysis_option = st.radio("Phân tích giai đoạn dựa trên:", ["Số lần tưới", "TBEC"], horizontal=True)
+                # Bố trí 2 cột: 1 bên chọn tiêu chí, 1 bên chọn mức độ xấp xỉ
+                col_opt1, col_opt2 = st.columns(2)
+                with col_opt1:
+                    analysis_option = st.radio("Phân tích dựa trên:", ["Số lần tưới", "TBEC"], horizontal=True)
+                with col_opt2:
+                    if analysis_option == "TBEC":
+                        tolerance = st.slider("Bỏ qua dao động nhỏ (Độ lệch TBEC):", 0.0, 1.0, 0.2, 0.05, 
+                                            help="Các ngày có TBEC chênh lệch nhau ÍT HƠN mức này sẽ được gộp chung vào 1 giai đoạn lớn.")
+                    else:
+                        tolerance = st.slider("Bỏ qua dao động nhỏ (Độ lệch Số lần tưới):", 0, 5, 1, 1,
+                                            help="Các ngày có Số lần tưới chênh lệch ÍT HƠN mức này sẽ được gộp chung.")
                 
                 selected_idx = season_names.index(selected_season_name)
                 selected_s_id = season_list[selected_idx]['s_id']
@@ -329,37 +339,52 @@ if uploaded_file:
                         pl.col("val_ec_goc").mean().round(2).alias("TBEC")
                     ]).sort("Date")
                     
-                    # Xác định cột giá trị dựa trên option
                     val_col = "Số lần tưới" if analysis_option == "Số lần tưới" else "TBEC"
                     
-                    # Logic chia giai đoạn: Khi giá trị thay đổi so với ngày trước đó
+                    # ---------------------------------------------------------
+                    # LOGIC MỚI: CHỈ QUA GIAI ĐOẠN KHI CHÊNH LỆCH VƯỢT MỨC CHO PHÉP
+                    # ---------------------------------------------------------
                     stage_data = stage_data.with_columns([
-                        (pl.col(val_col) != pl.col(val_col).shift(1)).fill_null(True).alias("is_new_stage")
+                        (pl.col(val_col).diff().abs() > tolerance).fill_null(True).alias("is_new_stage")
                     ])
                     stage_data = stage_data.with_columns(pl.col("is_new_stage").cum_sum().alias("stage_id"))
                     
-                    # Tổng hợp thông tin từng giai đoạn
+                    # Tổng hợp thông tin từng giai đoạn lớn
                     stages_summary = stage_data.group_by("stage_id").agg([
                         pl.col("Date").min().alias("Bắt đầu"),
                         pl.col("Date").max().alias("Kết thúc"),
-                        pl.col(val_col).first().alias("Giá trị duy trì"),
+                        pl.col(val_col).mean().round(2).alias("Trung bình mức duy trì"),
                         pl.count().alias("Số ngày")
                     ]).sort("Bắt đầu")
                     
-                    # Hiển thị biểu đồ giai đoạn (Dùng px.line với line_shape='vh' để tạo bậc thang)
+                    # Chuẩn bị dữ liệu bảng
+                    df_stages = stages_summary.to_pandas()
+                    
+                    # Điền sẵn vài tên gợi ý cơ bản, người dùng có thể đổi sau
+                    default_names = ["Xuống giống", "Phát triển thân lá", "Ra hoa / Đậu trái", "Nuôi trái/củ", "Dưỡng cây", "Thu hoạch"]
+                    stage_labels = [default_names[i] if i < len(default_names) else f"Giai đoạn {i+1}" for i in range(len(df_stages))]
+                    df_stages.insert(0, "Tên Giai Đoạn (Có thể sửa)", stage_labels)
+                    
+                    # Biểu đồ trực quan
                     fig_stage = px.line(
                         stage_data.to_pandas(), 
                         x="Date", 
                         y=val_col,
                         title=f"Biến thiên {val_col} theo thời gian - {selected_season_name}",
                         markers=True,
-                        line_shape='vh' # 'vh' (vertical-horizontal) tạo hiệu ứng step-pre
+                        line_shape='vh'
                     )
                     st.plotly_chart(fig_stage, use_container_width=True)
                     
-                    # Hiển thị bảng phân chia giai đoạn
-                    st.write(f"Danh sách các giai đoạn cây trồng (Dựa trên {analysis_option}):")
-                    st.dataframe(stages_summary.drop("stage_id"), use_container_width=True, hide_index=True)
+                    st.write(f"💡 **Mẹo:** Bạn có thể **click đúp vào cột Tên Giai Đoạn** ở bảng dưới để tự gõ lại thành tên đúng (như 3 mầm lá, ra củ...)")
+                    
+                    # Dùng data_editor thay vì dataframe thông thường để sửa được văn bản
+                    st.data_editor(
+                        df_stages.drop(columns=["stage_id"]), 
+                        use_container_width=True, 
+                        hide_index=True,
+                        disabled=["Bắt đầu", "Kết thúc", "Trung bình mức duy trì", "Số ngày"] # Khóa các cột số liệu, chỉ cho phép sửa Tên
+                    )
                 else:
                     st.info("Không tìm thấy dữ liệu chi tiết cho vụ này.")
             else:
