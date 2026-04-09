@@ -151,7 +151,14 @@ if uploaded_file:
     
     if res:
         df_p, seasons, daily = res
-        tab1, tab2, tab3 = st.tabs(["📋 Báo cáo Vụ & Nghỉ", "🔍 Tra cứu chi tiết đợt tưới", "🧪 Thống kê Châm Phân"])
+        
+        # FIXED: Thêm tab 4 vào danh sách khởi tạo
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📋 Báo cáo Vụ & Nghỉ", 
+            "🔍 Tra cứu chi tiết đợt tưới", 
+            "🧪 Thống kê Châm Phân", 
+            "🌱 Phân tích Giai đoạn Cây trồng"
+        ])
 
         with tab1:
             st.subheader("Bảng tổng hợp chu kỳ canh tác")
@@ -214,7 +221,7 @@ if uploaded_file:
             else:
                 st.info("Không có dữ liệu để hiển thị bảng chi tiết.")
 
-
+        # FIXED: Định dạng lại khoảng trắng (Space) chỗ khối Try - Except của Tab 3
         with tab3:
             st.subheader("Phân tích dữ liệu châm phân (EC Yêu Cầu)")
             
@@ -298,6 +305,7 @@ if uploaded_file:
                 except Exception as e:
                     st.error(f"Lỗi xử lý hệ thống: {e}")
 
+        # FIXED: Chỉnh lại thụt lề tab 4 thẳng hàng với các tab khác
         with tab4:
             st.subheader(f"Phân tích Giai đoạn Cây trồng - Khu {target_area}")
             
