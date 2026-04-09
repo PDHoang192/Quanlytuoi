@@ -250,35 +250,42 @@ if uploaded_file:
                         st.error("File không hợp lệ: Không tìm thấy trường 'Tên bồn' hoặc 'Tên khu'.")
                     else:
                         df_cp_filtered = df_cp.filter(
-                            pl.col(tank_col).str.to_uppercase().str.contains(target_tank)
+                            pl.col(tank_col).str.to_uppercase().str.contains(target_tank.strip())
                         )
                         
                         if df_cp_filtered.is_empty():
                             st.warning(f"Không tìm thấy dữ liệu châm phân cho bồn: {target_tank}")
                         else:
-                            # Đã loại bỏ điều kiện: filter(Trạng thái == "BẬT") 
-                            # vì EC yêu cầu thường được log định kỳ hoặc thụ động, việc lọc sẽ làm mất dữ liệu.
-                            
+                            # SỬA LỖI TẠI ĐÂY:
+                            # 1. str.slice(0, 10): Chỉ cắt lấy 10 ký tự đầu (YYYY-MM-DD) bỏ qua lỗi định dạng giờ
+                            # 2. str.extract(): Quét lấy đúng con số, lọc bỏ mọi ký tự thừa (khoảng trắng, chữ...)
                             df_cp_clean = df_cp_filtered.with_columns([
-                                pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S", strict=False).dt.date().alias("Date"),
-                                (pl.col("EC yêu cầu").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False) / 100).alias("EC_Yeu_Cau_Thuc_Te")
+                                pl.col("Thời gian").str.slice(0, 10).str.to_date("%Y-%m-%d", strict=False).alias("Date"),
+                                (pl.col("EC yêu cầu").cast(pl.Utf8).str.extract(r"(\d+[.,]?\d*)").str.replace(",", ".").cast(pl.Float64, strict=False) / 100).alias("EC_Yeu_Cau_Thuc_Te")
                             ]).drop_nulls(subset=["Date", "EC_Yeu_Cau_Thuc_Te"])
                             
                             df_cp_daily = df_cp_clean.group_by("Date").agg([
                                 pl.col("EC_Yeu_Cau_Thuc_Te").mean().round(2).alias("Trung bình EC yêu cầu")
                             ]).sort("Date")
                             
-                            st.success(f"Đã trích xuất thành công toàn bộ dữ liệu châm phân cho **{target_tank}**")
-                            
-                            fig_cp = px.line(df_cp_daily.to_pandas(), x="Date", y="Trung bình EC yêu cầu", 
-                                             title=f"Biểu đồ mức EC mục tiêu trung bình theo ngày - {target_tank}",
-                                             markers=True)
-                            fig_cp.update_layout(yaxis_title="Mức EC Yêu cầu (mS/cm)")
-                            st.plotly_chart(fig_cp, use_container_width=True)
-                            
-                            st.write("Bảng thống kê chi tiết toàn bộ chu kỳ:")
-                            st.dataframe(df_cp_daily, use_container_width=True, hide_index=True)
-                            
+                            if df_cp_daily.is_empty():
+                                st.warning("Không có dữ liệu hợp lệ sau khi làm sạch. Vui lòng kiểm tra lại định dạng file.")
+                            else:
+                                st.success(f"Đã trích xuất thành công toàn bộ dữ liệu châm phân cho **{target_tank}**")
+                                
+                                fig_cp = px.line(df_cp_daily.to_pandas(), x="Date", y="Trung bình EC yêu cầu", 
+                                                 title=f"Biểu đồ mức EC mục tiêu trung bình theo ngày - {target_tank}",
+                                                 markers=True)
+                                fig_cp.update_layout(
+                                    xaxis_title="Thời gian (Ngày)", 
+                                    yaxis_title="Mức EC Yêu cầu (mS/cm)",
+                                    xaxis=dict(tickformat="%Y-%m-%d") # Ép trục X hiển thị rõ ngày tháng
+                                )
+                                st.plotly_chart(fig_cp, use_container_width=True)
+                                
+                                st.write("Bảng thống kê chi tiết toàn bộ chu kỳ:")
+                                st.dataframe(df_cp_daily, use_container_width=True, hide_index=True)
+                                
                 except Exception as e:
                     st.error(f"Lỗi xử lý hệ thống: {e}")
     else:
