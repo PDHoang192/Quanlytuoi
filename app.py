@@ -193,38 +193,41 @@ if uploaded_file:
                         pl.col("val_ph_goc").mean().round(2).alias("TBPH")
                     ]).sort("Date")
                     
+                    # Chuyển đổi "Ngày thứ" thành dạng số nguyên (Int32) để Plotly không xếp nhầm
                     daily_stats = daily_stats.with_columns([
-                        ((pl.col("Date") - season_start).dt.total_days() + 1).alias("Ngày thứ")
+                        ((pl.col("Date") - season_start).dt.total_days() + 1).cast(pl.Int32).alias("Ngày thứ")
                     ])
                     
-                    # Chuyển sang pandas và sắp xếp chặt chẽ theo Ngày thứ
                     df_plot = daily_stats.to_pandas().sort_values("Ngày thứ")
                     
-                    # BIỂU ĐỒ CỘT DỌC (Vertical Bar Chart)
+                    # BIỂU ĐỒ CỘT CƠ BẢN NHẤT (Không chia color, không vẽ lung tung)
                     fig_season_turns = px.bar(
                         df_plot, 
                         x="Ngày thứ",
                         y="Số lần tưới",
                         title=f"Biểu đồ Số lần tưới theo ngày - {selected_season_name}",
                         text="Số lần tưới",
-                        color="Số lần tưới",
-                        color_continuous_scale="Blues",
-                        hover_data={"Date": True} # Thêm Ngày thực tế vào hộp thoại khi di chuột vào cột
+                        hover_data={"Date": True} # Trỏ chuột vào cột vẫn hiện ngày thực tế
                     )
                     
-                    fig_season_turns.update_traces(textposition='outside')
+                    # Định dạng cột màu xanh cơ bản, chữ hiển thị rõ ràng trên cột
+                    fig_season_turns.update_traces(
+                        textposition='outside',
+                        marker_color='royalblue' 
+                    )
+                    
+                    # Ép trục X hiển thị theo đúng trục số tuyến tính từ nhỏ đến lớn
                     fig_season_turns.update_layout(
                         xaxis_title="Ngày thứ trong Vụ", 
                         yaxis_title="Số lần tưới",
                         xaxis=dict(
-                            type='category',
-                            # Ép buộc trục X đi theo đúng danh sách Ngày thứ tự từ nhỏ đến lớn
-                            categoryorder='array', 
-                            categoryarray=df_plot["Ngày thứ"].tolist() 
+                            tickmode='linear',
+                            dtick=1 # Mỗi bước nhảy là 1 ngày
                         )
                     )
                     st.plotly_chart(fig_season_turns, use_container_width=True)
                     
+                    # BẢNG CHI TIẾT HIỂN THỊ ĐÚNG DỮ LIỆU
                     daily_stats_display = daily_stats.select([
                         "Ngày thứ", "Date", "Số lần tưới", "Thời gian tưới TB (giây)", "TBEC", "TBPH"
                     ]).rename({"Date": "Ngày thực tế"})
