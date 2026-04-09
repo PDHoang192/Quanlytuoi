@@ -2,54 +2,80 @@ import streamlit as st
 import polars as pl
 import json
 import re
+import ast
 import plotly.express as px
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Hệ Thống Quản Lý Tưới", layout="wide", page_icon="🌱")
 
-# --- HÀM ĐỌC FILE SIÊU CƯỜNG V2 ---
+# Hàm đọc file siêu cường: Chống mọi lỗi định dạng JSON
 def parse_log_file(file_content):
     raw_text = file_content.getvalue().decode("utf-8").strip()
     
-    # 1. Cố gắng dọn dẹp và đọc bằng JSON chuẩn trước
-    clean_text = re.sub(r'\}\s*\{', '},{', raw_text)
-    clean_text = re.sub(r',\s*\}', '}', clean_text)
-    clean_text = re.sub(r',\s*\]', ']', clean_text)
+    # 1. Thử tiền xử lý và đọc bằng JSON chuẩn
+    # Sửa lỗi thiếu dấu phẩy giữa các thuộc tính (VD: "Key1":"Val1" \n "Key2":"Val2")
+    raw_text_clean = re.sub(r'"\s*\n\s*"', '",\n"', raw_text)
+    # Sửa lỗi dấu phẩy thừa ở cuối object
+    raw_text_clean = re.sub(r',\s*\}', '}', raw_text_clean)
+    raw_text_clean = re.sub(r',\s*\]', ']', raw_text_clean)
+    # Sửa lỗi thiếu dấu phẩy giữa các object
+    raw_text_clean = re.sub(r'\}\s*\{', '},{', raw_text_clean)
     
-    json_text = clean_text if clean_text.startswith('[') else f"[{clean_text}]"
+    json_text = raw_text_clean if raw_text_clean.startswith('[') else f"[{raw_text_clean}]"
     
     try:
         return json.loads(json_text)
     except Exception:
         pass
         
-    # 2. CHẾ ĐỘ QUÉT REGEX V2 (Bất tử trước mọi lỗi cấu trúc)
-    # Tách khối trực tiếp bằng key "Thời gian" để đảm bảo KHÔNG BỎ SÓT bất kỳ block sự kiện nào
+    # 2. Thử đọc bằng AST (Linh hoạt hơn với dấu phẩy thừa)
+    try:
+        py_text = json_text.replace('true', 'True').replace('false', 'False').replace('null', 'None')
+        return ast.literal_eval(py_text)
+    except Exception:
+        pass
+
+    # 3. Phương án cuối cùng: Quét Regex trích xuất trực tiếp dữ liệu (Bất chấp mọi lỗi định dạng)
     records = []
-    chunks = re.split(r'"Thời gian"\s*:\s*', raw_text)
+    # Phân tách file bằng dấu '{'. Do mọi object JSON đều bắt đầu bằng '{', 
+    # cách này đảm bảo không bỏ sót bất kỳ dòng log nào từ đầu đến cuối file.
+    chunks = raw_text.split('{') 
     
-    for i in range(1, len(chunks)):
-        chunk = chunks[i]
+    for chunk in chunks:
+        if not chunk.strip(): continue
         record = {}
         
-        # Trích xuất thời gian (luôn nằm ở đầu block sau khi split)
-        time_match = re.search(r'^"([^"]+)"', chunk)
-        if time_match:
+        # Bắt buộc phải có Thời gian thì mới tính là 1 record hợp lệ
+        time_match = re.search(r'"Thời gian"\s*:\s*"([^"]+)"', chunk)
+        if time_match: 
             record["Thời gian"] = time_match.group(1)
         else:
             continue
             
-        # Trích xuất linh động MỌI CẶP "Key": "Value" còn lại trong block này
-        kv_matches = re.finditer(r'"([^"]+)"\s*:\s*"([^"]*)"', chunk)
-        for m in kv_matches:
-            record[m.group(1)] = m.group(2)
-            
-        records.append(record)
+        khu_match = re.search(r'"Tên khu"\s*:\s*"([^"]+)"', chunk)
+        if khu_match: record["Tên khu"] = khu_match.group(1)
         
+        bon_match = re.search(r'"Tên bồn"\s*:\s*"([^"]+)"', chunk)
+        if bon_match: record["Tên bồn"] = bon_match.group(1)
+        
+        state_match = re.search(r'"Trạng thái"\s*:\s*"([^"]+)"', chunk)
+        if state_match: record["Trạng thái"] = state_match.group(1)
+        
+        ec_req_match = re.search(r'"EC yêu cầu"\s*:\s*"([^"]+)"', chunk)
+        if ec_req_match: record["EC yêu cầu"] = ec_req_match.group(1)
+        
+        tbec_match = re.search(r'"TBEC"\s*:\s*"([^"]+)"', chunk)
+        if tbec_match: record["TBEC"] = tbec_match.group(1)
+        
+        tbph_match = re.search(r'"TBPH"\s*:\s*"([^"]+)"', chunk)
+        if tbph_match: record["TBPH"] = tbph_match.group(1)
+        
+        records.append(record)
+            
     if records:
         return records
         
-    raise Exception("Không thể đọc được dữ liệu từ file. File hỏng nặng hoặc sai định dạng hoàn toàn.")
+    raise Exception("File log bị hỏng cấu trúc quá nặng, không thể trích xuất dữ liệu tự động.")
 
 def process_data(file_content, target_area, gap_limit, min_season_days):
     try:
@@ -58,46 +84,29 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
     except Exception as e:
         return None, f"Lỗi đọc file log: {e}"
 
-    if "Thời gian" not in df.columns or "Trạng thái" not in df.columns:
-        return None, "File thiếu các trường cơ bản (Thời gian, Trạng thái)."
+    needed_cols = ["Thời gian", "Tên khu", "TBEC", "TBPH", "Trạng thái"]
+    
+    missing_cols = [c for c in needed_cols if c not in df.columns]
+    if missing_cols:
+        return None, f"Dữ liệu thiếu các cột cơ bản: {', '.join(missing_cols)}"
         
-    # Lọc bao quát cả "Tên khu" và "Tên bồn"
-    target_upper = target_area.upper()
-    if "Tên khu" in df.columns and "Tên bồn" in df.columns:
-        area_filter = pl.col("Tên khu").str.to_uppercase().str.contains(target_upper) | pl.col("Tên bồn").str.to_uppercase().str.contains(target_upper)
-    elif "Tên khu" in df.columns:
-        area_filter = pl.col("Tên khu").str.to_uppercase().str.contains(target_upper)
-    elif "Tên bồn" in df.columns:
-        area_filter = pl.col("Tên bồn").str.to_uppercase().str.contains(target_upper)
-    else:
-         return None, "Không tìm thấy cột Tên khu/Tên bồn."
-         
-    df = df.filter(area_filter)
+    # Lọc khu vực (Không phân biệt hoa thường)
+    df = df.select(needed_cols).filter(
+        pl.col("Tên khu").str.to_uppercase().str.contains(target_area.upper())
+    )
     
     if df.is_empty():
         return None, f"Không tìm thấy dữ liệu cho khu vực: {target_area}"
 
     df = df.with_columns([
         pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S", strict=False).alias("dt"),
-    ])
-    
-    df = df.filter(pl.col("dt").is_not_null())
-    
-    if "TBEC" in df.columns:
-        df = df.with_columns(pl.col("TBEC").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False))
-    else:
-        df = df.with_columns(pl.lit(0.0).alias("TBEC"))
-        
-    if "TBPH" in df.columns:
-        df = df.with_columns(pl.col("TBPH").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False))
-    else:
-        df = df.with_columns(pl.lit(0.0).alias("TBPH"))
+        pl.col("TBEC").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False),
+        pl.col("TBPH").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False)
+    ]).drop_nulls(subset=["dt"]).sort("dt")
 
-    df = df.sort("dt")
-
-    # Lọc bao quát chữ BẬT/TẮT
-    df_on = df.filter(pl.col("Trạng thái").str.to_uppercase().str.contains("BẬT"))
-    df_off = df.filter(pl.col("Trạng thái").str.to_uppercase().str.contains("TẮT")).with_columns(
+    # Chuẩn hóa trạng thái (Bật/Tắt) tránh lỗi gõ phím khoảng trắng hoặc chữ thường
+    df_on = df.filter(pl.col("Trạng thái").str.to_uppercase().str.strip_chars() == "BẬT")
+    df_off = df.filter(pl.col("Trạng thái").str.to_uppercase().str.strip_chars() == "TẮT").with_columns(
         pl.col("dt").alias("dt_end")
     )
 
@@ -119,6 +128,9 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
 
     df_pairs = df_pairs.filter((pl.col("duration_s") > 0) & (pl.col("duration_s") < 600))
 
+    if df_pairs.is_empty():
+        return None, "Không tìm thấy các chu kỳ bật/tắt hợp lệ trong khoảng thời gian cho phép."
+
     daily = df_pairs.group_by("Date").agg([
         pl.count().alias("turns")
     ]).sort("Date")
@@ -138,13 +150,14 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
 
     return (df_pairs, seasons, daily), "Thành công"
 
-
 # --- GIAO DIỆN ---
+st.title("🚜 Nhật Ký Vận Hành & Phân Tích Tưới")
+
 with st.sidebar:
-    target_area = st.text_input("Khu vực canh tác:", "ANT-2").upper()
+    target_area = st.text_input("Khu vực:", "ANT-2").upper()
     gap_limit = st.slider("Ngắt vụ (ngày):", 1, 10, 2)
     min_days = st.number_input("Ngày tối thiểu/vụ:", value=10)
-    uploaded_file = st.file_uploader("Tải file log tưới chính", type=['txt', 'json'])
+    uploaded_file = st.file_uploader("Tải file log tưới", type=['txt', 'json'])
 
 if uploaded_file:
     res, msg = process_data(uploaded_file, target_area, gap_limit, min_days)
@@ -172,9 +185,11 @@ if uploaded_file:
 
         with tab2:
             st.subheader(f"Thống kê chi tiết từng ngày tưới - Khu {target_area}")
+            
             if not seasons.is_empty():
                 season_list = seasons.to_dicts()
                 season_names = [f"Vụ {i+1} ({s['Start']} đến {s['End']})" for i, s in enumerate(season_list)]
+                
                 selected_season_name = st.selectbox("Chọn Vụ để xem chi tiết:", options=season_names)
                 
                 selected_idx = season_names.index(selected_season_name)
@@ -196,80 +211,84 @@ if uploaded_file:
                     ])
                     
                     fig_season_turns = px.bar(
-                        daily_stats.to_pandas(), x="Ngày thứ", y="Số lần tưới",
-                        title=f"Biểu đồ Số lần tưới theo ngày - {selected_season_name}", text="Số lần tưới",
-                        color="Số lần tưới", color_continuous_scale="Blues"
+                        daily_stats.to_pandas(), 
+                        x="Ngày thứ", 
+                        y="Số lần tưới",
+                        title=f"Biểu đồ Số lần tưới theo ngày - {selected_season_name}",
+                        text="Số lần tưới",
+                        color="Số lần tưới",
+                        color_continuous_scale="Blues"
                     )
                     fig_season_turns.update_traces(textposition='outside')
+                    fig_season_turns.update_layout(xaxis_title="Ngày thứ trong Vụ", yaxis_title="Số lần tưới")
                     st.plotly_chart(fig_season_turns, use_container_width=True)
                     
                     daily_stats_display = daily_stats.select([
                         "Ngày thứ", "Date", "Số lần tưới", "Thời gian tưới TB (giây)", "TBEC", "TBPH"
                     ]).rename({"Date": "Ngày thực tế"})
+                    
+                    st.write("Bảng dữ liệu chi tiết:")
                     st.dataframe(daily_stats_display, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Không có dữ liệu chi tiết cho vụ này.")
             else:
                 st.warning("Chưa có dữ liệu vụ canh tác nào đạt điều kiện.")
 
         with tab3:
-            st.subheader("Phân tích toàn bộ dữ liệu châm phân")
+            st.subheader("Phân tích dữ liệu châm phân (EC Yêu Cầu)")
+            
             col1, col2 = st.columns(2)
             with col1:
-                uploaded_cp_file = st.file_uploader("Tải file log châm phân (JSON/TXT)", type=['txt', 'json'], key="cp_upload")
+                uploaded_cp_file = st.file_uploader("Tải file châm phân (JSON/TXT)", type=['txt', 'json'], key="cp_upload")
             with col2:
-                target_tank = st.text_input("Tìm kiếm bồn:", "BỒN TG-ANT3").upper()
+                target_tank = st.text_input("Tìm kiếm bồn:", "BỒN TG-ANT1").upper()
 
             if uploaded_cp_file:
                 try:
                     data_cp = parse_log_file(uploaded_cp_file)
                     df_cp = pl.DataFrame(data_cp)
                     
-                    # BAO QUÁT CẢ TÊN KHU VÀ TÊN BỒN
-                    if "Tên khu" in df_cp.columns and "Tên bồn" in df_cp.columns:
-                        tank_filter = pl.col("Tên khu").str.to_uppercase().str.contains(target_tank) | pl.col("Tên bồn").str.to_uppercase().str.contains(target_tank)
-                    elif "Tên khu" in df_cp.columns:
-                        tank_filter = pl.col("Tên khu").str.to_uppercase().str.contains(target_tank)
-                    elif "Tên bồn" in df_cp.columns:
-                        tank_filter = pl.col("Tên bồn").str.to_uppercase().str.contains(target_tank)
-                    else:
-                        tank_filter = None
-
-                    if tank_filter is None:
-                        st.error("File không hợp lệ: Không tìm thấy trường 'Tên bồn' hoặc 'Tên khu'.")
-                    elif "EC yêu cầu" not in df_cp.columns or "Thời gian" not in df_cp.columns:
+                    tank_col = "Tên bồn" if "Tên bồn" in df_cp.columns else "Tên khu" if "Tên khu" in df_cp.columns else None
+                    
+                    if "EC yêu cầu" not in df_cp.columns or "Thời gian" not in df_cp.columns:
                         st.error("File không hợp lệ: Cần có các trường 'Thời gian' và 'EC yêu cầu'.")
+                    elif not tank_col:
+                        st.error("File không hợp lệ: Không tìm thấy trường 'Tên bồn' hoặc 'Tên khu'.")
                     else:
-                        df_cp_filtered = df_cp.filter(tank_filter)
+                        # Lọc bồn (Không phân biệt hoa thường)
+                        df_cp_filtered = df_cp.filter(
+                            pl.col(tank_col).str.to_uppercase().str.contains(target_tank)
+                        )
                         
                         if df_cp_filtered.is_empty():
-                            st.warning(f"Không tìm thấy dữ liệu cho bồn: {target_tank}")
+                            st.warning(f"Không tìm thấy dữ liệu châm phân cho bồn: {target_tank}")
                         else:
-                            # BAO QUÁT TẤT CẢ TỪ KHÓA CHỨA CHỮ "BẬT" (Bật, Bật tay, Bật tự động...)
+                            # Lọc chuẩn hóa trạng thái "Bật"
                             if "Trạng thái" in df_cp_filtered.columns:
-                                df_cp_filtered = df_cp_filtered.filter(pl.col("Trạng thái").str.to_uppercase().str.contains("BẬT"))
+                                df_cp_filtered = df_cp_filtered.filter(
+                                    pl.col("Trạng thái").str.to_uppercase().str.strip_chars() == "BẬT"
+                                )
                                 
                             df_cp_clean = df_cp_filtered.with_columns([
-                                # CẮT CHÍNH XÁC 10 KÝ TỰ ĐẦU (YYYY-MM-DD) - CHỐNG LỖI FORMAT THỜI GIAN
-                                pl.col("Thời gian").str.slice(0, 10).str.to_date("%Y-%m-%d", strict=False).alias("Date"),
+                                pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S", strict=False).dt.date().alias("Date"),
                                 (pl.col("EC yêu cầu").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False) / 100).alias("EC_Yeu_Cau_Thuc_Te")
                             ]).drop_nulls(subset=["Date", "EC_Yeu_Cau_Thuc_Te"])
                             
-                            if df_cp_clean.is_empty():
-                                st.warning("Không trích xuất được dữ liệu hợp lệ. Có thể EC yêu cầu trống hoặc ngày giờ lỗi.")
-                            else:
-                                df_cp_daily = df_cp_clean.group_by("Date").agg([
-                                    pl.col("EC_Yeu_Cau_Thuc_Te").mean().round(2).alias("Trung bình EC yêu cầu")
-                                ]).sort("Date")
-                                
-                                st.success(f"Đã phân tích toàn bộ tiến trình cho **{target_tank}**")
-                                
-                                fig_cp = px.line(df_cp_daily.to_pandas(), x="Date", y="Trung bình EC yêu cầu", 
-                                                 title=f"Biểu đồ mức EC mục tiêu trung bình theo ngày - {target_tank}",
-                                                 markers=True)
-                                fig_cp.update_layout(yaxis_title="Mức EC Yêu cầu (mS/cm)")
-                                st.plotly_chart(fig_cp, use_container_width=True)
-                                
-                                st.dataframe(df_cp_daily, use_container_width=True, hide_index=True)
-                                
+                            df_cp_daily = df_cp_clean.group_by("Date").agg([
+                                pl.col("EC_Yeu_Cau_Thuc_Te").mean().round(2).alias("Trung bình EC yêu cầu")
+                            ]).sort("Date")
+                            
+                            st.success(f"Đã trích xuất thành công toàn bộ dữ liệu châm phân cho **{target_tank}**")
+                            
+                            fig_cp = px.line(df_cp_daily.to_pandas(), x="Date", y="Trung bình EC yêu cầu", 
+                                             title=f"Biểu đồ mức EC mục tiêu trung bình theo ngày - {target_tank}",
+                                             markers=True)
+                            fig_cp.update_layout(yaxis_title="Mức EC Yêu cầu (mS/cm)")
+                            st.plotly_chart(fig_cp, use_container_width=True)
+                            
+                            st.write("Bảng thống kê chi tiết toàn bộ chu kỳ:")
+                            st.dataframe(df_cp_daily, use_container_width=True, hide_index=True)
+                            
                 except Exception as e:
                     st.error(f"Lỗi xử lý hệ thống: {e}")
     else:
