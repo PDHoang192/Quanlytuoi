@@ -84,14 +84,15 @@ with st.sidebar:
     target_area = st.text_input("Khu vực:", "ANT-2").upper()
     gap_limit = st.slider("Ngắt vụ (ngày):", 1, 10, 2)
     min_days = st.number_input("Ngày tối thiểu/vụ:", value=10)
-    uploaded_file = st.file_uploader("Tải file log", type=['txt'])
+    uploaded_file = st.file_uploader("Tải file log tưới", type=['txt', 'json'])
 
 if uploaded_file:
     res, msg = process_data(uploaded_file, target_area, gap_limit, min_days)
     
     if res:
         df_p, seasons, daily = res
-        tab1, tab2 = st.tabs(["📋 Báo cáo Vụ & Nghỉ", "🔍 Tra cứu chi tiết đợt tưới"])
+        # Đã thêm tab3 vào danh sách tabs
+        tab1, tab2, tab3 = st.tabs(["📋 Báo cáo Vụ & Nghỉ", "🔍 Tra cứu chi tiết đợt tưới", "🧪 Thống kê Châm Phân"])
 
         with tab1:
             st.subheader("Bảng tổng hợp chu kỳ canh tác")
@@ -133,5 +134,63 @@ if uploaded_file:
                 ])
                 st.write(f"Kết quả cho ngày **{search_date.strftime('%d/%m/%Y')}**:")
                 st.dataframe(day_detail, use_container_width=True, hide_index=True)
+
+        with tab3:
+            st.subheader("Phân tích dữ liệu châm phân (EC Yêu Cầu)")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                uploaded_cp_file = st.file_uploader("Tải file châm phân (JSON/TXT)", type=['txt', 'json'], key="cp_upload")
+            with col2:
+                target_tank = st.text_input("Tìm kiếm bồn:", "BỒN TG-ANT1").upper()
+
+            if uploaded_cp_file:
+                raw_cp = uploaded_cp_file.getvalue().decode("utf-8").strip()
+                if not raw_cp.startswith('['):
+                    raw_cp = "[" + raw_cp.replace('}{', '},{').replace('}\n{', '},{') + "]"
+                
+                try:
+                    data_cp = json.loads(raw_cp)
+                    df_cp = pl.DataFrame(data_cp)
+                    
+                    # Xác định cột chứa tên bồn (hỗ trợ cả Tên bồn hoặc Tên khu)
+                    tank_col = "Tên bồn" if "Tên bồn" in df_cp.columns else "Tên khu" if "Tên khu" in df_cp.columns else None
+                    
+                    if "EC yêu cầu" not in df_cp.columns or "Thời gian" not in df_cp.columns:
+                        st.error("File không hợp lệ: Cần có các trường 'Thời gian' và 'EC yêu cầu'.")
+                    elif not tank_col:
+                        st.error("File không hợp lệ: Không tìm thấy trường 'Tên bồn' hoặc 'Tên khu'.")
+                    else:
+                        # Lọc theo tên bồn
+                        df_cp_filtered = df_cp.filter(pl.col(tank_col).str.contains(target_tank))
+                        
+                        if df_cp_filtered.is_empty():
+                            st.warning(f"Không tìm thấy dữ liệu châm phân cho bồn: {target_tank}")
+                        else:
+                            # Làm sạch và tính trung bình theo ngày
+                            df_cp_clean = df_cp_filtered.with_columns([
+                                pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S").dt.date().alias("Date"),
+                                pl.col("EC yêu cầu").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False)
+                            ])
+                            
+                            df_cp_daily = df_cp_clean.group_by("Date").agg([
+                                pl.col("EC yêu cầu").mean().round(2).alias("Trung bình EC yêu cầu")
+                            ]).sort("Date")
+                            
+                            st.success(f"Đã xử lý thành công dữ liệu cho **{target_tank}**")
+                            
+                            # Hiển thị biểu đồ
+                            fig_cp = px.line(df_cp_daily.to_pandas(), x="Date", y="Trung bình EC yêu cầu", 
+                                             title=f"Biểu đồ EC Yêu cầu trung bình theo ngày - {target_tank}",
+                                             markers=True)
+                            st.plotly_chart(fig_cp, use_container_width=True)
+                            
+                            # Hiển thị bảng chi tiết
+                            st.write("Bảng thống kê chi tiết:")
+                            st.dataframe(df_cp_daily, use_container_width=True, hide_index=True)
+                            
+                except Exception as e:
+                    st.error(f"Lỗi xử lý file châm phân: {e}")
+
     else:
         st.error(msg)
