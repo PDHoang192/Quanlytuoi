@@ -346,13 +346,14 @@ if uploaded_file:
                         pl.count().alias("Số ngày")
                     ]).sort("Bắt đầu")
                     
-                    # Hiển thị biểu đồ giai đoạn
-                    fig_stage = px.steppre(
+                    # Hiển thị biểu đồ giai đoạn (Dùng px.line với line_shape='vh' để tạo bậc thang)
+                    fig_stage = px.line(
                         stage_data.to_pandas(), 
                         x="Date", 
                         y=val_col,
                         title=f"Biến thiên {val_col} theo thời gian - {selected_season_name}",
-                        markers=True
+                        markers=True,
+                        line_shape='vh' # 'vh' (vertical-horizontal) tạo hiệu ứng step-pre
                     )
                     st.plotly_chart(fig_stage, use_container_width=True)
                     
