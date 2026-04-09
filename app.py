@@ -215,6 +215,9 @@ if uploaded_file:
                 st.info("Không có dữ liệu để hiển thị bảng chi tiết.")
 
 
+tab1, tab2, tab3, tab4 = st.tabs(["📋 Báo cáo Vụ & Nghỉ", "🔍 Tra cứu chi tiết đợt tưới", "🧪 Thống kê Châm Phân", "📈 Phân tích Giai đoạn"])
+
+        # ... (các tab 1, 2 giữ nguyên) ...
 
         with tab3:
             st.subheader("Phân tích dữ liệu châm phân (EC Yêu Cầu)")
@@ -295,9 +298,11 @@ if uploaded_file:
                         # Bảng chi tiết
                         st.write("Bảng thống kê chi tiết toàn bộ chu kỳ:")
                         st.dataframe(df_plot[["Ngày", "Trung bình EC yêu cầu"]], use_container_width=True, hide_index=True)
-           
-            
-            with tab4:
+
+                except Exception as e:
+                    st.error(f"Lỗi xử lý hệ thống: {e}")
+
+        with tab4:
             st.subheader(f"Phân tích Giai đoạn Cây trồng - Khu {target_area}")
             
             if not seasons.is_empty():
@@ -354,9 +359,6 @@ if uploaded_file:
                     st.info("Không tìm thấy dữ liệu chi tiết cho vụ này.")
             else:
                 st.warning("Chưa có dữ liệu vụ canh tác.")
-                
-                except Exception as e:
-                    st.error(f"Lỗi xử lý hệ thống: {e}")
-            
+
     else:
         st.error(msg)
