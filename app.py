@@ -1,104 +1,152 @@
 import streamlit as st
 import polars as pl
 import json
-import re
 import plotly.express as px
+from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Hệ Thống Phân Tích Tưới", layout="wide")
+st.set_page_config(page_title="Hệ Thống Quản Lý Tưới", layout="wide", page_icon="🌱")
 
-# --- HÀM QUÉT DỮ LIỆU CỰC MẠNH (DEEP SCAN) ---
-def parse_raw_log(file_content):
-    raw_text = file_content.getvalue().decode("utf-8").strip()
-    data = []
-    
-    # Chiến thuật 1: Regex lấy cụm nội dung giữa các dấu ngoặc nhọn
-    # Dùng non-greedy để lấy từng object riêng lẻ
-    matches = re.findall(r'\{[^{}]*\}', raw_text)
-    
-    # Nếu không tìm thấy bằng regex đơn giản, thử dùng logic đếm dấu ngoặc (cho JSON phức tạp)
-    if not matches:
-        start = -1
-        count = 0
-        for i, char in enumerate(raw_text):
-            if char == '{':
-                if count == 0: start = i
-                count += 1
-            elif char == '}':
-                count -= 1
-                if count == 0 and start != -1:
-                    matches.append(raw_text[start:i+1])
-    
-    for m in matches:
-        try:
-            # Loại bỏ các ký tự xuống dòng và khoảng trắng thừa gây lỗi
-            clean_m = re.sub(r'\s+', ' ', m)
-            obj = json.loads(clean_m)
-            data.append(obj)
-        except:
-            continue
-            
-    return data
+def process_data(file_content, target_area, gap_limit, min_season_days):
+    raw_text = file_content.getvalue().decode("utf-8").strip()
+    if not raw_text.startswith('['):
+        raw_text = "[" + raw_text.replace('}{', '},{').replace('}\n{', '},{') + "]"
+    
+    try:
+        data = json.loads(raw_text)
+        df = pl.DataFrame(data)
+    except Exception as e:
+        return None, f"Lỗi đọc file: {e}"
 
-def normalize_area_name(name):
-    if not name: return ""
-    return re.sub(r'(BỒN|TG|KHU|VƯỜN|[\s\-_])', '', str(name).upper())
+    needed_cols = ["Thời gian", "Tên khu", "TBEC", "TBPH", "Trạng thái"]
+    df = df.select(needed_cols).filter(pl.col("Tên khu").str.contains(target_area.upper()))
+    
+    if df.is_empty():
+        return None, f"Không tìm thấy dữ liệu cho khu vực: {target_area}"
 
-def load_data(uploaded_files, target_area_normalized):
-    all_records = []
-    if uploaded_files:
-        for f in uploaded_files:
-            all_records.extend(parse_raw_log(f))
-            
-    if not all_records:
-        return pl.DataFrame(), []
-    
-    df = pl.DataFrame(all_records)
-    
-    # Chuẩn hóa cột
-    cols = df.columns
-    if "Thời gian" not in cols:
-        return pl.DataFrame(), []
+    df = df.with_columns([
+        pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S").alias("dt"),
+        pl.col("TBEC").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False),
+        pl.col("TBPH").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False)
+    ]).sort("dt")
 
-    # Xử lý thời gian và số liệu
-    df = df.with_columns([
-        pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S", strict=False).alias("dt"),
-        (pl.col("TBEC").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False).fill_null(0) / 100).alias("val_ec"),
-        (pl.col("EC yêu cầu").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False).fill_null(0) / 100).alias("ec_target") if "EC yêu cầu" in cols else pl.lit(0).alias("ec_target")
-    ])
-    
-    df = df.filter(pl.col("dt").is_not_null())
-    df = df.with_columns(pl.col("Tên khu").map_elements(normalize_area_name, return_dtype=pl.Utf8).alias("norm_name"))
-    
-    unique_names = df["Tên khu"].unique().to_list()
-    filtered_df = df.filter(pl.col("norm_name").str.contains(target_area_normalized))
-    
-    return filtered_df.sort("dt"), unique_names
+    df_on = df.filter(pl.col("Trạng thái") == "Bật")
+    df_off = df.filter(pl.col("Trạng thái") == "Tắt").with_columns(
+        pl.col("dt").alias("dt_end")
+    )
+
+    df_pairs = df_on.join_asof(
+        df_off,
+        on="dt",
+        strategy="forward", 
+        suffix="_end"
+    )
+
+    df_pairs = df_pairs.filter(pl.col("dt_end").is_not_null())
+
+    df_pairs = df_pairs.with_columns([
+        ((pl.col("dt_end") - pl.col("dt")).dt.total_seconds()).alias("duration_s"),
+        pl.col("dt").dt.date().alias("Date"),
+        pl.coalesce(["TBEC_end", "TBEC"]).alias("val_ec_goc"),
+        pl.coalesce(["TBPH_end", "TBPH"]).alias("val_ph_goc")
+    ])
+
+    # Lọc bỏ tưới < 15 giây (rác) và > 600 giây (lỗi)
+    df_pairs = df_pairs.filter((pl.col("duration_s") >= 15) & (pl.col("duration_s") < 600))
+
+    # Nhóm theo ngày và tính Trung Bình Thời gian, TBEC, TBPH
+    daily = df_pairs.group_by("Date").agg([
+        pl.count().alias("turns"),
+        pl.col("duration_s").mean().round(0).alias("avg_duration"),
+        pl.col("val_ec_goc").mean().round(2).alias("avg_ec"),
+        pl.col("val_ph_goc").mean().round(2).alias("avg_ph")
+    ]).sort("Date")
+
+    # Tính toán chia vụ
+    daily = daily.with_columns([
+        (pl.col("Date").diff().dt.total_days() > gap_limit).fill_null(False).alias("is_new_season")
+    ])
+    daily = daily.with_columns(pl.col("is_new_season").cum_sum().alias("s_id"))
+
+    seasons = daily.group_by("s_id").agg([
+        pl.col("Date").min().alias("Start"),
+        pl.col("Date").max().alias("End"),
+        ((pl.col("Date").max() - pl.col("Date").min()).dt.total_days() + 1).alias("Days")
+    ]).filter(pl.col("Days") >= min_season_days).sort("Start")
+
+    return (df_pairs, seasons, daily), "Thành công"
 
 # --- GIAO DIỆN ---
-st.title("🚜 Đối Soát Dữ Liệu Tưới")
+st.title("🚜 Nhật Ký Vận Hành & Phân Tích Tưới")
 
-area_input = st.sidebar.text_input("Mã khu vực:", "ANT3")
-norm_input = normalize_area_name(area_input)
+with st.sidebar:
+    target_area = st.text_input("Khu vực:", "ANT-2").upper()
+    gap_limit = st.slider("Ngắt vụ (ngày):", 1, 10, 2)
+    min_days = st.number_input("Ngày tối thiểu/vụ:", value=10)
+    # ĐÃ SỬA: Cho phép chọn cả đuôi .txt và .json
+    uploaded_file = st.file_uploader("Tải file log", type=['txt', 'json'])
 
-f_fert = st.sidebar.file_uploader("1. File Châm phân (JSON)", accept_multiple_files=True)
-f_drip = st.sidebar.file_uploader("2. File Nhỏ giọt (TXT)", accept_multiple_files=True)
+if uploaded_file:
+    res, msg = process_data(uploaded_file, target_area, gap_limit, min_days)
+    
+    if res:
+        df_p, seasons, daily = res
+        tab1, tab2 = st.tabs(["📋 Báo cáo Vụ & Nghỉ", "🔍 Phân tích chi tiết Vụ Mùa"])
 
-if f_fert and f_drip:
-    res_fert, names_fert = load_data(f_fert, norm_input)
-    res_drip, names_drip = load_data(f_drip, norm_input)
+        with tab1:
+            st.subheader("Bảng tổng hợp chu kỳ canh tác")
+            s_list = seasons.to_dicts()
+            final_report = []
+            for i, s in enumerate(s_list):
+                final_report.append({
+                    "Giai đoạn": f"VỤ MÙA {i+1}", "Bắt đầu": s["Start"], "Kết thúc": s["End"],
+                    "Số ngày": s["Days"], "Trạng thái": "Hoàn thành"
+                })
+                if i < len(s_list) - 1:
+                    r_s, r_e = s["End"] + timedelta(days=1), s_list[i+1]["Start"] - timedelta(days=1)
+                    final_report.append({
+                        "Giai đoạn": "🟢 NGHỈ ĐẤT", "Bắt đầu": r_s, "Kết thúc": r_e,
+                        "Số ngày": (r_e - r_s).days + 1, "Trạng thái": "Nghỉ dưỡng"
+                    })
+            st.table(final_report)
 
-    if res_fert.is_empty() or res_drip.is_empty():
-        st.error(f"⚠️ Không khớp dữ liệu cho mã '{norm_input}'")
-        with st.expander("🔍 Danh sách khu vực tìm thấy trong file"):
-            st.write("**File Châm phân:**", names_fert)
-            st.write("**File Nhỏ giọt:**", names_drip)
-            if not names_fert:
-                st.warning("Hệ thống không bóc tách được bất kỳ bản ghi nào từ file Châm phân. Hãy kiểm tra lại file có nội dung bên trong không?")
-    else:
-        # Tính toán và hiển thị
-        daily_target = res_fert.filter(pl.col("Trạng thái") == "Bật").group_by(pl.col("dt").dt.date()).agg(pl.col("ec_target").mean().alias("Target"))
-        daily_real = res_drip.group_by(pl.col("dt").dt.date()).agg(pl.col("val_ec").mean().alias("Real"))
-        
-        final = daily_real.join(daily_target, on="dt", how="left").sort("dt")
-        st.plotly_chart(px.line(final.to_pandas(), x="dt", y=["Target", "Real"], markers=True))
-        st.dataframe(final.to_pandas())
+        with tab2:
+            st.subheader(f"Thống kê vận hành khu {target_area}")
+            
+            daily_min_2 = daily.filter(pl.col("turns") >= 2)
+            fig = px.bar(daily_min_2.to_pandas(), x="Date", y="turns", 
+                         title="Các ngày có tần suất tưới >= 2 lần/ngày",
+                         color="turns", color_continuous_scale="Viridis")
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.divider()
+            
+            season_dicts = seasons.to_dicts()
+            if season_dicts:
+                season_options = {}
+                for i, s in enumerate(season_dicts):
+                    label = f"VỤ MÙA {i+1} ({s['Start'].strftime('%d/%m/%Y')} - {s['End'].strftime('%d/%m/%Y')})"
+                    season_options[label] = s["s_id"]
+                
+                selected_season = st.selectbox("🔍 Chọn Vụ để xem phân tích từng ngày:", options=list(season_options.keys()))
+                
+                if selected_season:
+                    sel_id = season_options[selected_season]
+                    
+                    season_daily_data = daily.filter(pl.col("s_id") == sel_id).sort("Date")
+                    
+                    display_df = season_daily_data.select([
+                        pl.col("Date").dt.strftime("%d/%m/%Y").alias("Ngày"),
+                        pl.col("turns").alias("Số lần tưới"),
+                        pl.col("avg_duration").alias("TB Thời gian (giây)"),
+                        pl.col("avg_ec").alias("TBEC"),
+                        pl.col("avg_ph").alias("TBPH")
+                    ]).to_pandas()
+                    
+                    display_df.insert(0, "STT", range(1, len(display_df) + 1))
+                    
+                    st.write(f"Phân tích chi tiết **{selected_season}**:")
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("Chưa có dữ liệu Vụ Mùa nào đủ điều kiện.")
+    else:
+        st.error(msg). VẪN GIỮ LẠI BIỂU ĐỒ TƯỚI CỦA TỪNG KHU, CÓ THỂ ADD 2 FILE ĐỂ ĐỌC KHÔNG, FILE CHÂM PHÂN ĐỂ PHÂN TÍCH EC YÊU CẦU ĐỂ CHIA GIAI ĐOẠN, FILE NHỎ GIỌT ĐỂ PHÂN TÍCH MÙA VỤ, LỊCH TƯỚI
