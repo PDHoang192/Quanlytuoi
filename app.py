@@ -172,6 +172,8 @@ if uploaded_file:
 
         with tab2:
             st.subheader(f"Thống kê vận hành khu {target_area}")
+            
+            # PHẦN 1: Biểu đồ (giữ nguyên theo ý bạn)
             daily_min_2 = daily.filter(pl.col("turns") >= 2)
             fig = px.bar(daily_min_2.to_pandas(), x="Date", y="turns", 
                          title="Các ngày có tần suất tưới >= 2 lần/ngày",
@@ -179,20 +181,21 @@ if uploaded_file:
             st.plotly_chart(fig, use_container_width=True)
             
             st.divider()
-            search_date = st.selectbox("Chọn ngày để xem chi tiết:", 
-                                      options=sorted(df_p["Date"].unique(), reverse=True))
             
-            if search_date:
-                # Hiển thị chính xác TBEC, TBPH
-                day_detail = df_p.filter(pl.col("Date") == search_date).select([
-                    pl.col("dt").dt.strftime("%H:%M:%S").alias("Giờ Bật"),
-                    pl.col("dt_end").dt.strftime("%H:%M:%S").alias("Giờ Tắt"),
-                    pl.col("duration_s").alias("Thời gian (giây)"),
-                    pl.col("val_ec_goc").round(2).alias("TBEC"),
-                    pl.col("val_ph_goc").round(2).alias("TBPH")
-                ])
-                st.write(f"Kết quả cho ngày **{search_date.strftime('%d/%m/%Y')}**:")
-                st.dataframe(day_detail, use_container_width=True, hide_index=True)
+            # PHẦN 2: Bảng số liệu chi tiết gom nhóm theo từng ngày
+            st.subheader("Bảng số liệu tổng hợp từng ngày")
+            
+            if not df_p.is_empty():
+                # Gom nhóm theo Ngày (Date) và tính toán các giá trị trung bình/tổng
+                daily_summary = df_p.group_by("Date").agg([
+                    pl.count().alias("Số lần tưới"),
+                    pl.col("duration_s").mean().round(0).alias("Thời gian tưới TB (giây)"),
+                    pl.col("val_ec_goc").mean().round(2).alias("TBEC")
+                ]).sort("Date") # Sắp xếp thứ tự thời gian từ ngày đầu tiên đến ngày cuối cùng
+                
+                st.dataframe(daily_summary, use_container_width=True, hide_index=True)
+            else:
+                st.info("Không có dữ liệu để hiển thị bảng chi tiết.")
 
 
 
