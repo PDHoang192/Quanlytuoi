@@ -1,120 +1,137 @@
 import streamlit as st
 import polars as pl
 import json
-import re
 import plotly.express as px
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Hệ Thống Quản Lý Tưới", layout="wide", page_icon="🌱")
 
-# --- HÀM ĐỌC DỮ LIỆU SẠCH (FIX LỖI U+00A0 VÀ JSON ERROR) ---
-def parse_raw_log(file_content):
-    try:
-        # Giải mã và loại bỏ các ký tự ẩn gây lỗi Syntax/JSON
-        raw_text = file_content.getvalue().decode("utf-8")
-        raw_text = raw_text.replace('\u00a0', ' ').strip() # Xử lý lỗi U+00A0
-        
-        data = []
-        # Chiến thuật bóc tách từng object để tránh lỗi 'Expecting property name'
-        matches = re.findall(r'\{[^{}]*\}', raw_text, re.DOTALL)
-        
-        for m in matches:
-            try:
-                # Làm sạch nội dung bên trong object trước khi parse
-                clean_m = re.sub(r'\s+', ' ', m)
-                data.append(json.loads(clean_m))
-            except:
-                continue
-        return data
-    except Exception as e:
-        st.error(f"Lỗi đọc file thô: {e}")
-        return []
-
-def process_data(uploaded_file, target_area, gap_limit, min_days):
-    records = parse_raw_log(uploaded_file)
-    if not records:
-        return None, "Không thể bóc tách dữ liệu từ file. Vui lòng kiểm tra lại định dạng JSON."
-
-    df = pl.DataFrame(records)
+def process_data(file_content, target_area, gap_limit, min_season_days):
+    raw_text = file_content.getvalue().decode("utf-8").strip()
+    if not raw_text.startswith('['):
+        raw_text = "[" + raw_text.replace('}{', '},{').replace('}\n{', '},{') + "]"
     
-    # Kiểm tra cột cần thiết
-    needed_cols = ["Thời gian", "Tên khu", "TBEC", "TBPH", "Trạng thái", "EC yêu cầu"]
-    for col in needed_cols:
-        if col not in df.columns:
-            if col == "EC yêu cầu": df = df.with_columns(pl.lit("0").alias("EC yêu cầu"))
-            else: return None, f"File thiếu cột quan trọng: {col}"
+    try:
+        data = json.loads(raw_text)
+        df = pl.DataFrame(data)
+    except Exception as e:
+        return None, f"Lỗi đọc file: {e}"
 
-    # Lọc khu vực (Chuẩn hóa tên để khớp BỒN TG-ANT3 và ANT3)
-    df = df.filter(pl.col("Tên khu").str.to_uppercase().str.contains(target_area.upper()))
+    needed_cols = ["Thời gian", "Tên khu", "TBEC", "TBPH", "Trạng thái"]
+    df = df.select(needed_cols).filter(pl.col("Tên khu").str.contains(target_area.upper()))
     
     if df.is_empty():
         return None, f"Không tìm thấy dữ liệu cho khu vực: {target_area}"
 
-    # Chuyển đổi kiểu dữ liệu (Xử lý số liệu chia 100)
+    # Đã sửa: Chuẩn hóa dấu phẩy thành dấu chấm trước khi chuyển thành số thập phân
     df = df.with_columns([
-        pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S", strict=False).alias("dt"),
-        (pl.col("TBEC").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False).fill_null(0) / 100).alias("val_ec"),
-        (pl.col("EC yêu cầu").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False).fill_null(0) / 100).alias("val_ec_target")
-    ]).filter(pl.col("dt").is_not_null()).sort("dt")
+        pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S").alias("dt"),
+        pl.col("TBEC").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False),
+        pl.col("TBPH").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False)
+    ]).sort("dt")
 
-    # Tính toán sự kiện Bật/Tắt
+    # LOGIC GHÉP CẶP
     df_on = df.filter(pl.col("Trạng thái") == "Bật")
-    df_off = df.filter(pl.col("Trạng thái") == "Tắt").select([
+    df_off = df.filter(pl.col("Trạng thái") == "Tắt").with_columns(
         pl.col("dt").alias("dt_end")
-    ])
+    )
 
-    if df_on.is_empty() or df_off.is_empty():
-        return None, "Dữ liệu không có đủ cặp trạng thái Bật và Tắt."
+    # Ghép dòng Bật với dòng Tắt kế tiếp
+    df_pairs = df_on.join_asof(
+        df_off,
+        on="dt",
+        strategy="forward", 
+        suffix="_end"
+    )
 
-    df_pairs = df_on.join_asof(df_off, left_on="dt", right_on="dt_end", strategy="forward")
+    # Loại bỏ những lần Bật mà không có lần Tắt
     df_pairs = df_pairs.filter(pl.col("dt_end").is_not_null())
-    
+
+    # Đã sửa: Lấy TBEC/TBPH từ dòng "Tắt" (TBEC_end). 
+    # Nếu dòng Tắt không có, hàm coalesce sẽ tự động lùi lại tìm ở dòng "Bật" (TBEC).
     df_pairs = df_pairs.with_columns([
         ((pl.col("dt_end") - pl.col("dt")).dt.total_seconds()).alias("duration_s"),
-        pl.col("dt").dt.date().alias("Date")
-    ]).filter((pl.col("duration_s") >= 15) & (pl.col("duration_s") < 900))
+        pl.col("dt").dt.date().alias("Date"),
+        pl.coalesce(["TBEC_end", "TBEC"]).alias("val_ec_goc"),
+        pl.coalesce(["TBPH_end", "TBPH"]).alias("val_ph_goc")
+    ])
 
-    # Nhóm theo ngày
+    # Lọc bỏ các dữ liệu vô lý (> 600s tương đương 10 phút)
+    df_pairs = df_pairs.filter((pl.col("duration_s") > 0) & (pl.col("duration_s") < 600))
+
+    # Xác định Vụ
     daily = df_pairs.group_by("Date").agg([
-        pl.count().alias("turns"),
-        pl.col("duration_s").mean().round(0).alias("avg_duration"),
-        pl.col("val_ec").mean().round(2).alias("avg_ec_real"),
-        pl.col("val_ec_target").mean().round(2).alias("avg_ec_target")
+        pl.count().alias("turns")
     ]).sort("Date")
 
-    # Chia vụ mùa
     daily = daily.with_columns([
-        (pl.col("Date").diff().dt.total_days() > gap_limit).fill_null(False).alias("is_new")
+        (pl.col("Date").diff().dt.total_days() > gap_limit).fill_null(False).alias("is_new_season")
     ])
-    daily = daily.with_columns(pl.col("is_new").cum_sum().alias("s_id"))
+    daily = daily.with_columns(pl.col("is_new_season").cum_sum().alias("s_id"))
 
     seasons = daily.group_by("s_id").agg([
         pl.col("Date").min().alias("Start"),
         pl.col("Date").max().alias("End"),
         ((pl.col("Date").max() - pl.col("Date").min()).dt.total_days() + 1).alias("Days")
-    ]).filter(pl.col("Days") >= min_days).sort("Start")
+    ]).filter(pl.col("Days") >= min_season_days).sort("Start")
 
     return (df_pairs, seasons, daily), "Thành công"
 
 # --- GIAO DIỆN ---
+st.title("🚜 Nhật Ký Vận Hành & Phân Tích Tưới")
+
 with st.sidebar:
-    st.header("Cài đặt")
-    target_area = st.text_input("Khu vực (vd: ANT3):", "ANT-3")
-    gap_limit = st.slider("Số ngày nghỉ ngắt vụ:", 1, 10, 2)
-    min_days = st.number_input("Số ngày tối thiểu/vụ:", 5)
-    uploaded_file = st.file_uploader("Tải file log (JSON/TXT)", type=['json', 'txt'])
+    target_area = st.text_input("Khu vực:", "ANT-2").upper()
+    gap_limit = st.slider("Ngắt vụ (ngày):", 1, 10, 2)
+    min_days = st.number_input("Ngày tối thiểu/vụ:", value=10)
+    uploaded_file = st.file_uploader("Tải file log", type=['txt'])
 
 if uploaded_file:
     res, msg = process_data(uploaded_file, target_area, gap_limit, min_days)
+    
     if res:
         df_p, seasons, daily = res
-        tab1, tab2 = st.tabs(["📅 Chu Kỳ Vụ Mùa", "📊 Phân Tích EC"])
-        
+        tab1, tab2 = st.tabs(["📋 Báo cáo Vụ & Nghỉ", "🔍 Tra cứu chi tiết đợt tưới"])
+
         with tab1:
-            st.subheader("Bảng tổng hợp Giai đoạn")
+            st.subheader("Bảng tổng hợp chu kỳ canh tác")
             s_list = seasons.to_dicts()
-            report = []
+            final_report = []
             for i, s in enumerate(s_list):
-                report.append({"Giai đoạn": f"VỤ {i+1}", "Bắt đầu": s["Start"], "Kết thúc": s["End"], "Số ngày": s["Days"]})
+                final_report.append({
+                    "Giai đoạn": f"VỤ MÙA {i+1}", "Bắt đầu": s["Start"], "Kết thúc": s["End"],
+                    "Số ngày": s["Days"], "Trạng thái": "Hoàn thành"
+                })
                 if i < len(s_list) - 1:
-                   
+                    r_s, r_e = s["End"] + timedelta(days=1), s_list[i+1]["Start"] - timedelta(days=1)
+                    final_report.append({
+                        "Giai đoạn": "🟢 NGHỈ ĐẤT", "Bắt đầu": r_s, "Kết thúc": r_e,
+                        "Số ngày": (r_e - r_s).days + 1, "Trạng thái": "Nghỉ dưỡng"
+                    })
+            st.table(final_report)
+
+        with tab2:
+            st.subheader(f"Thống kê vận hành khu {target_area}")
+            daily_min_2 = daily.filter(pl.col("turns") >= 2)
+            fig = px.bar(daily_min_2.to_pandas(), x="Date", y="turns", 
+                         title="Các ngày có tần suất tưới >= 2 lần/ngày",
+                         color="turns", color_continuous_scale="Viridis")
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.divider()
+            search_date = st.selectbox("Chọn ngày để xem chi tiết:", 
+                                      options=sorted(df_p["Date"].unique(), reverse=True))
+            
+            if search_date:
+                # Hiển thị chính xác TBEC, TBPH
+                day_detail = df_p.filter(pl.col("Date") == search_date).select([
+                    pl.col("dt").dt.strftime("%H:%M:%S").alias("Giờ Bật"),
+                    pl.col("dt_end").dt.strftime("%H:%M:%S").alias("Giờ Tắt"),
+                    pl.col("duration_s").alias("Thời gian (giây)"),
+                    pl.col("val_ec_goc").round(2).alias("TBEC"),
+                    pl.col("val_ph_goc").round(2).alias("TBPH")
+                ])
+                st.write(f"Kết quả cho ngày **{search_date.strftime('%d/%m/%Y')}**:")
+                st.dataframe(day_detail, use_container_width=True, hide_index=True)
+    else:
+        st.error(msg)
