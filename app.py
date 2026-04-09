@@ -4,188 +4,180 @@ import json
 import plotly.express as px
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Hệ Thống Quản Lý Tưới", layout="wide", page_icon="🌱")
+st.set_page_config(page_title="Hệ Thống Phân Tích Tưới Chuyên Sâu", layout="wide", page_icon="📊")
 
-def process_data(file_content, target_area, gap_limit, min_season_days):
-    raw_text = file_content.getvalue().decode("utf-8").strip()
-    if not raw_text.startswith('['):
-        raw_text = "[" + raw_text.replace('}{', '},{').replace('}\n{', '},{') + "]"
+# --- HÀM ĐỌC VÀ GỘP NHIỀU FILE ---
+def load_multiple_files(uploaded_files, target_area=None):
+    if not uploaded_files:
+        return None
     
-    try:
-        data = json.loads(raw_text)
-        df = pl.DataFrame(data)
-    except Exception as e:
-        return None, f"Lỗi đọc file: {e}"
-
-    needed_cols = ["Thời gian", "Tên khu", "TBEC", "TBPH", "Trạng thái"]
-    df = df.select(needed_cols).filter(pl.col("Tên khu").str.contains(target_area.upper()))
+    all_dfs = []
+    for file in uploaded_files:
+        raw_text = file.getvalue().decode("utf-8").strip()
+        # Xử lý định dạng JSON lỗi (thiếu dấu phẩy giữa các object)
+        if not raw_text.startswith('['):
+            raw_text = "[" + raw_text.replace('}{', '},{').replace('}\n{', '},{') + "]"
+        
+        try:
+            data = json.loads(raw_text)
+            df = pl.DataFrame(data)
+            all_dfs.append(df)
+        except Exception as e:
+            st.error(f"Lỗi đọc file {file.name}: {e}")
+            
+    if not all_dfs:
+        return None
     
-    if df.is_empty():
-        return None, f"Không tìm thấy dữ liệu cho khu vực: {target_area}"
-
-    df = df.with_columns([
+    # Gộp tất cả các file thành 1 DataFrame duy nhất
+    combined_df = pl.concat(all_dfs)
+    
+    # Tiền xử lý các cột chung
+    # Lưu ý: Bạn cần kiểm tra tên cột "EC Yêu Cầu" trong file của mình, ở đây giả định là "EC_YeuCau" hoặc tương đương
+    # Nếu file của bạn dùng tên khác, hãy đổi lại trong list select bên dưới
+    cols = combined_df.columns
+    target_ec_col = "EC_YeuCau" if "EC_YeuCau" in cols else ("Yêu Cầu EC" if "Yêu Cầu EC" in cols else None)
+    
+    combined_df = combined_df.with_columns([
         pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S").alias("dt"),
         pl.col("TBEC").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False),
-        pl.col("TBPH").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False)
-    ]).sort("dt")
+        pl.col("TBPH").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False),
+    ])
+    
+    if target_ec_col:
+        combined_df = combined_df.with_columns(
+            pl.col(target_ec_col).cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False).alias("EC_Setpoint")
+        )
+    else:
+        # Nếu không tìm thấy cột EC yêu cầu, tạo cột giả định bằng 0 để tránh lỗi
+        combined_df = combined_df.with_columns(pl.lit(0.0).alias("EC_Setpoint"))
 
+    if target_area:
+        combined_df = combined_df.filter(pl.col("Tên khu").str.contains(target_area.upper()))
+        
+    return combined_df.sort("dt")
+
+# --- LOGIC XỬ LÝ SỰ KIỆN TƯỚI (MỖI LẦN BẬT/TẮT) ---
+def get_irrigation_events(df):
     df_on = df.filter(pl.col("Trạng thái") == "Bật")
-    df_off = df.filter(pl.col("Trạng thái") == "Tắt").with_columns(
-        pl.col("dt").alias("dt_end")
-    )
+    df_off = df.filter(pl.col("Trạng thái") == "Tắt").select([
+        pl.col("dt").alias("dt_end"),
+        pl.col("TBEC").alias("ec_end")
+    ])
 
-    df_pairs = df_on.join_asof(
-        df_off,
-        on="dt",
-        strategy="forward", 
-        suffix="_end"
-    )
-
+    # Ghép đôi Bật - Tắt
+    df_pairs = df_on.join_asof(df_off, left_on="dt", right_on="dt_end", strategy="forward")
     df_pairs = df_pairs.filter(pl.col("dt_end").is_not_null())
-
+    
     df_pairs = df_pairs.with_columns([
         ((pl.col("dt_end") - pl.col("dt")).dt.total_seconds()).alias("duration_s"),
-        pl.col("dt").dt.date().alias("Date"),
-        pl.coalesce(["TBEC_end", "TBEC"]).alias("val_ec_goc"),
-        pl.coalesce(["TBPH_end", "TBPH"]).alias("val_ph_goc")
+        pl.col("dt").dt.date().alias("Date")
     ])
-
-    df_pairs = df_pairs.filter((pl.col("duration_s") >= 15) & (pl.col("duration_s") < 600))
-
-    daily = df_pairs.group_by("Date").agg([
-        pl.count().alias("turns"),
-        pl.col("duration_s").mean().round(0).alias("avg_duration"),
-        pl.col("val_ec_goc").mean().round(2).alias("avg_ec"),
-        pl.col("val_ph_goc").mean().round(2).alias("avg_ph")
-    ]).sort("Date")
-
-    daily = daily.with_columns([
-        (pl.col("Date").diff().dt.total_days() > gap_limit).fill_null(False).alias("is_new_season")
-    ])
-    daily = daily.with_columns(pl.col("is_new_season").cum_sum().alias("s_id"))
-
-    seasons = daily.group_by("s_id").agg([
-        pl.col("Date").min().alias("Start"),
-        pl.col("Date").max().alias("End"),
-        ((pl.col("Date").max() - pl.col("Date").min()).dt.total_days() + 1).alias("Days")
-    ]).filter(pl.col("Days") >= min_season_days).sort("Start")
-
-    return (df_pairs, seasons, daily), "Thành công"
+    # Loại bỏ các lần tưới quá ngắn (xả đường ống) hoặc quá dài (quên tắt)
+    return df_pairs.filter((pl.col("duration_s") >= 15) & (pl.col("duration_s") < 900))
 
 # --- GIAO DIỆN ---
-st.title("🚜 Nhật Ký Vận Hành & Phân Tích Tưới")
+st.title("🌱 Hệ Thống Phân Tích Dữ Liệu Tưới Đa Nguồn")
 
 with st.sidebar:
-    target_area = st.text_input("Khu vực:", "ANT-2").upper()
-    gap_limit = st.slider("Ngắt vụ (ngày):", 1, 10, 2)
-    min_days = st.number_input("Ngày tối thiểu/vụ:", value=10)
+    st.header("Cấu Hình")
+    area = st.text_input("Khu vực mục tiêu:", "ANT-2").upper()
+    
+    st.subheader("1. File Châm Phân")
+    st.caption("Để lấy EC Yêu Cầu & Chia giai đoạn")
+    files_fert = st.file_uploader("Upload log Châm phân (nhiều file)", type=['txt', 'json'], accept_multiple_files=True)
+    
+    st.subheader("2. File Nhỏ Giọt")
+    st.caption("Để lấy EC thực tế & Mùa vụ từng khu")
+    files_drip = st.file_uploader("Upload log Nhỏ giọt (nhiều file)", type=['txt', 'json'], accept_multiple_files=True)
     
     st.divider()
-    st.markdown("**Cấu hình Phân tích Giai đoạn**")
-    # Thêm thanh kéo để tùy chỉnh độ nhạy khi nhận diện giai đoạn qua EC
-    ec_threshold = st.slider("Độ lệch EC để nhận diện chuyển giai đoạn:", 0.05, 0.50, 0.15, step=0.05)
-    
-    uploaded_file = st.file_uploader("Tải file log", type=['txt', 'json'])
+    gap_limit = st.slider("Số ngày nghỉ để ngắt vụ:", 1, 7, 2)
 
-if uploaded_file:
-    res, msg = process_data(uploaded_file, target_area, gap_limit, min_days)
-    
-    if res:
-        df_p, seasons, daily = res
-        tab1, tab2 = st.tabs(["📋 Báo cáo Vụ & Nghỉ", "📈 Phân tích Giai đoạn Sinh trưởng"])
+# --- XỬ LÝ DỮ LIỆU ---
+if files_fert and files_drip:
+    df_fert_raw = load_multiple_files(files_fert)
+    df_drip_raw = load_multiple_files(files_drip, target_area=area)
+
+    if df_fert_raw is not None and df_drip_raw is not None:
+        # 1. Xử lý file Nhỏ giọt: Tính toán mùa vụ và thông số thực tế hàng ngày
+        df_events = get_irrigation_events(df_drip_raw)
+        
+        daily_stats = df_events.group_by("Date").agg([
+            pl.count().alias("turns"),
+            pl.col("duration_s").mean().round(0).alias("avg_duration"),
+            pl.col("TBEC").mean().round(2).alias("avg_ec_real"),
+            pl.col("TBPH").mean().round(2).alias("avg_ph_real")
+        ]).sort("Date")
+
+        # Xác định Mùa vụ / Nghỉ đất
+        daily_stats = daily_stats.with_columns([
+            (pl.col("Date").diff().dt.total_days() > gap_limit).fill_null(False).alias("is_new_season")
+        ])
+        daily_stats = daily_stats.with_columns(pl.col("is_new_season").cum_sum().alias("season_id"))
+
+        # 2. Xử lý file Châm phân: Tìm EC Yêu cầu hàng ngày để chia Giai đoạn
+        # Lấy EC_Setpoint phổ biến nhất trong ngày đó
+        daily_setpoint = df_fert_raw.with_columns(pl.col("dt").dt.date().alias("Date")) \
+            .group_by("Date").agg(pl.col("EC_Setpoint").median().alias("ec_target")) \
+            .sort("Date")
+
+        # Kết hợp dữ liệu Thực tế và Yêu cầu
+        final_daily = daily_stats.join(daily_setpoint, on="Date", how="left")
+
+        # --- HIỂN THỊ ---
+        tab1, tab2, tab3 = st.tabs(["📅 Quản lý Vụ Mùa", "📈 Biểu đồ EC & Vận hành", "📋 Báo cáo chi tiết"])
 
         with tab1:
-            st.subheader("Bảng tổng hợp chu kỳ canh tác")
-            s_list = seasons.to_dicts()
-            final_report = []
-            for i, s in enumerate(s_list):
-                final_report.append({
-                    "Giai đoạn": f"VỤ MÙA {i+1}", "Bắt đầu": s["Start"], "Kết thúc": s["End"],
-                    "Số ngày": s["Days"], "Trạng thái": "Hoàn thành"
-                })
-                if i < len(s_list) - 1:
-                    r_s, r_e = s["End"] + timedelta(days=1), s_list[i+1]["Start"] - timedelta(days=1)
-                    final_report.append({
-                        "Giai đoạn": "🟢 NGHỈ ĐẤT", "Bắt đầu": r_s, "Kết thúc": r_e,
-                        "Số ngày": (r_e - r_s).days + 1, "Trạng thái": "Nghỉ dưỡng"
-                    })
-            st.table(final_report)
+            st.subheader("Phân tích chu kỳ canh tác & Nghỉ đất")
+            seasons = final_daily.group_by("season_id").agg([
+                pl.col("Date").min().alias("Start"),
+                pl.col("Date").max().alias("End"),
+                ((pl.col("Date").max() - pl.col("Date").min()).dt.total_days() + 1).alias("Days")
+            ]).sort("Start")
+            
+            # Hiển thị bảng vụ mùa và nghỉ đất
+            report = []
+            s_dicts = seasons.to_dicts()
+            for i, s in enumerate(s_dicts):
+                report.append({"Loại": f"VỤ {i+1}", "Từ ngày": s["Start"], "Đến ngày": s["End"], "Số ngày": s["Days"]})
+                if i < len(s_dicts) - 1:
+                    gap = (s_dicts[i+1]["Start"] - s["End"]).days - 1
+                    if gap > 0:
+                        report.append({"Loại": "🟢 NGHỈ ĐẤT", "Từ ngày": s["End"] + timedelta(days=1), 
+                                       "Đến ngày": s_dicts[i+1]["Start"] - timedelta(days=1), "Số ngày": gap})
+            st.table(report)
 
         with tab2:
-            st.subheader(f"Theo dõi dinh dưỡng & Sinh trưởng - Khu {target_area}")
+            st.subheader(f"So sánh EC Yêu Cầu vs Thực Tế - Khu {area}")
+            fig_ec = px.line(final_daily.to_pandas(), x="Date", y=["ec_target", "avg_ec_real"],
+                             labels={"value": "Giá trị EC", "Date": "Ngày"},
+                             title="Tương quan giữa EC Cài đặt (Máy) và EC Thực tế (Vòi)",
+                             markers=True)
+            st.plotly_chart(fig_ec, use_container_width=True)
             
-            season_dicts = seasons.to_dicts()
-            if season_dicts:
-                season_options = {}
-                for i, s in enumerate(season_dicts):
-                    label = f"VỤ MÙA {i+1} ({s['Start'].strftime('%d/%m/%Y')} - {s['End'].strftime('%d/%m/%Y')})"
-                    season_options[label] = s["s_id"]
-                
-                selected_season = st.selectbox("🔍 Chọn Vụ để phân tích:", options=list(season_options.keys()))
-                
-                if selected_season:
-                    sel_id = season_options[selected_season]
-                    
-                    # Lấy dữ liệu của vụ được chọn
-                    df_season = daily.filter(pl.col("s_id") == sel_id).sort("Date")
-                    
-                    # -- TÍNH TOÁN STT VÀ PHÂN CHIA GIAI ĐOẠN THEO EC --
-                    # Tạo cột số thứ tự ngày trong vụ
-                    df_season = df_season.with_columns(pl.int_range(1, pl.len() + 1).alias("STT_Ngày"))
-                    
-                    # Tính độ lệch EC so với ngày hôm trước
-                    df_season = df_season.with_columns(
-                        pl.col("avg_ec").diff().abs().fill_null(0).alias("ec_diff")
-                    )
-                    
-                    # Đánh dấu Giai đoạn mới nếu độ lệch lớn hơn ngưỡng ec_threshold
-                    df_season = df_season.with_columns(
-                        (pl.col("ec_diff") >= ec_threshold).cast(pl.Int32).cum_sum().alias("stage_idx")
-                    )
-                    df_season = df_season.with_columns(
-                        (pl.lit("Giai đoạn ") + (pl.col("stage_idx") + 1).cast(pl.Utf8)).alias("Giai_doan")
-                    )
-                    
-                    pd_season = df_season.to_pandas()
+            st.divider()
+            st.subheader("Thời gian tưới trung bình (giây/lần)")
+            fig_dur = px.bar(final_daily.to_pandas(), x="Date", y="avg_duration", color="turns")
+            st.plotly_chart(fig_dur, use_container_width=True)
 
-                    # -- VẼ BIỂU ĐỒ --
-                    st.markdown(f"#### Biểu đồ thay đổi Dinh dưỡng (EC) - Tự động nhận diện giai đoạn")
-                    fig = px.line(pd_season, x="STT_Ngày", y="avg_ec", color="Giai_doan", markers=True,
-                                  title="Biến thiên Trung bình EC theo ngày tuổi của cây",
-                                  labels={"STT_Ngày": "Ngày tuổi (trong vụ)", "avg_ec": "Mức EC trung bình (mS/cm)", "Giai_doan": "Giai đoạn"},
-                                  line_shape="spline") # spline giúp đường cong mượt mà hơn
-                    
-                    fig.update_layout(yaxis_range=[pd_season['avg_ec'].min()*0.8, pd_season['avg_ec'].max()*1.2])
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    # -- BẢNG TỔNG HỢP GIAI ĐOẠN --
-                    st.markdown("#### Bảng tóm tắt các Giai đoạn (Dựa trên công thức phân)")
-                    stage_summary = df_season.group_by("Giai_doan").agg([
-                        pl.col("STT_Ngày").min().alias("Ngày bắt đầu"),
-                        pl.col("STT_Ngày").max().alias("Ngày kết thúc"),
-                        pl.count().alias("Tổng số ngày"),
-                        pl.col("avg_ec").mean().round(2).alias("EC trung bình"),
-                        pl.col("avg_ph").mean().round(2).alias("pH trung bình")
-                    ]).sort("Ngày bắt đầu").to_pandas()
-                    
-                    st.dataframe(stage_summary, use_container_width=True, hide_index=True)
-
-                    st.divider()
-
-                    # -- BẢNG CHI TIẾT TỪNG NGÀY --
-                    with st.expander("Bấm vào đây để xem rà soát chi tiết từng ngày"):
-                        display_df = df_season.select([
-                            pl.col("STT_Ngày").alias("Ngày tuổi"),
-                            pl.col("Date").dt.strftime("%d/%m/%Y").alias("Lịch thực tế"),
-                            pl.col("Giai_doan").alias("Giai đoạn"),
-                            pl.col("turns").alias("Số lần tưới"),
-                            pl.col("avg_duration").alias("TB Thời gian (s)"),
-                            pl.col("avg_ec").alias("TBEC"),
-                            pl.col("avg_ph").alias("TBPH")
-                        ]).to_pandas()
-                        
-                        st.dataframe(display_df, use_container_width=True, hide_index=True)
-            else:
-                st.info("Chưa có dữ liệu Vụ Mùa nào đủ điều kiện.")
+        with tab3:
+            st.subheader(f"Nhật ký vận hành chi tiết khu {area}")
+            # Chia giai đoạn sinh trưởng dựa trên sự thay đổi của EC Target
+            final_daily = final_daily.with_columns(
+                (pl.col("ec_target").diff().abs() > 0.05).fill_null(False).cum_sum().alias("phase_id")
+            )
+            
+            st.dataframe(
+                final_daily.select([
+                    pl.col("Date").alias("Ngày"),
+                    pl.col("ec_target").alias("EC Yêu Cầu"),
+                    pl.col("avg_ec_real").alias("EC Thực Tế"),
+                    pl.col("turns").alias("Số lần tưới"),
+                    pl.col("avg_duration").alias("Thời gian/lần (s)"),
+                ]).to_pandas(),
+                use_container_width=True
+            )
     else:
-        st.error(msg)
+        st.warning("Không thể xử lý dữ liệu. Vui lòng kiểm tra định dạng file.")
+else:
+    st.info("💡 Mẹo: Bạn có thể chọn nhiều file log cùng lúc bằng cách nhấn giữ Ctrl (hoặc Cmd) khi chọn file.")
