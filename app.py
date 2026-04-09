@@ -180,9 +180,26 @@ if uploaded_file:
                          color="turns", color_continuous_scale="Viridis")
             st.plotly_chart(fig, use_container_width=True)
             
+            # --- PHẦN 2: THÊM BIỂU ĐỒ VẼ MẬT ĐỘ TBEC TƯƠNG TỰ BÊN DƯỚI ---
+            st.subheader("Biểu đồ Mật độ TBEC Trung bình theo Ngày")
+            
+            if not df_p.is_empty():
+                # Gom nhóm theo Ngày (Date) và tính toán giá trị TBEC
+                ec_summary = df_p.group_by("Date").agg([
+                    pl.col("val_ec_goc").mean().round(2).alias("TBEC")
+                ]).sort("Date")
+                
+                # Vẽ biểu đồ cột tương tự biểu đồ turns, sử dụng thang màu Viridis cho TBEC
+                fig_ec = px.bar(ec_summary.to_pandas(), x="Date", y="TBEC",
+                                 title="Biểu đồ phân bố TBEC trung bình",
+                                 color="TBEC", color_continuous_scale="Viridis")
+                st.plotly_chart(fig_ec, use_container_width=True)
+            else:
+                st.info("Không có dữ liệu EC để hiển thị biểu đồ.")
+                
             st.divider()
             
-            # PHẦN 2: Bảng số liệu chi tiết gom nhóm theo từng ngày
+            # PHẦN 3: Bảng số liệu chi tiết gom nhóm theo từng ngày
             st.subheader("Bảng số liệu tổng hợp từng ngày")
             
             if not df_p.is_empty():
