@@ -320,10 +320,10 @@ if uploaded_file:
                     analysis_option = st.radio("Phân tích dựa trên:", ["Số lần tưới", "TBEC"], horizontal=True)
                 with col_opt2:
                     if analysis_option == "TBEC":
-                        tolerance = st.slider("Bỏ qua dao động nhỏ (Độ lệch TBEC):", 0.0, 1.0, 0.2, 0.05, 
+                        tolerance = st.slider("Bỏ qua dao động nhỏ (Độ lệch TBEC):", 0.0, 5.0, 0.2, 0.5, 
                                             help="Các ngày có TBEC chênh lệch nhau ÍT HƠN mức này sẽ được gộp chung vào 1 giai đoạn lớn.")
                     else:
-                        tolerance = st.slider("Bỏ qua dao động nhỏ (Độ lệch Số lần tưới):", 0, 5, 1, 1,
+                        tolerance = st.slider("Bỏ qua dao động nhỏ (Độ lệch Số lần tưới):", 0, 10, 1, 1,
                                             help="Các ngày có Số lần tưới chênh lệch ÍT HƠN mức này sẽ được gộp chung.")
                 
                 selected_idx = season_names.index(selected_season_name)
