@@ -197,12 +197,11 @@ if uploaded_file:
                         ((pl.col("Date") - season_start).dt.total_days() + 1).alias("Ngày thứ")
                     ])
                     
-                    # BIỂU ĐỒ CỘT NGANG (Horizontal Bar Chart)
+                    # BIỂU ĐỒ CỘT DỌC (Vertical Bar Chart)
                     fig_season_turns = px.bar(
                         daily_stats.to_pandas(), 
-                        x="Số lần tưới",      # Đổi X thành số lần tưới
-                        y="Ngày thứ",         # Đổi Y thành Ngày thứ
-                        orientation='h',      # Thuộc tính xoay ngang
+                        x="Ngày thứ",         # Trục X dàn trải theo Ngày thứ
+                        y="Số lần tưới",      # Trục Y thể hiện Số lần tưới
                         title=f"Biểu đồ Số lần tưới theo ngày - {selected_season_name}",
                         text="Số lần tưới",
                         color="Số lần tưới",
@@ -210,10 +209,10 @@ if uploaded_file:
                     )
                     fig_season_turns.update_traces(textposition='outside')
                     fig_season_turns.update_layout(
-                        xaxis_title="Số lần tưới", 
-                        yaxis_title="Ngày thứ trong Vụ",
-                        # Ép trục Y theo Category và đảo ngược để ngày 1 nằm trên cùng
-                        yaxis=dict(type='category', autorange="reversed") 
+                        xaxis_title="Ngày thứ trong Vụ", 
+                        yaxis_title="Số lần tưới",
+                        # Ép trục X hiển thị lần lượt từ trái sang phải, không xáo trộn
+                        xaxis=dict(type='category') 
                     )
                     st.plotly_chart(fig_season_turns, use_container_width=True)
                     
