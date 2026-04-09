@@ -239,53 +239,81 @@ if uploaded_file:
 
             if uploaded_cp_file:
                 try:
+                    # Đọc file lấy danh sách dictionary (đã xử lý regex ở hàm parse_log_file)
                     data_cp = parse_log_file(uploaded_cp_file)
-                    df_cp = pl.DataFrame(data_cp)
                     
-                    tank_col = "Tên bồn" if "Tên bồn" in df_cp.columns else "Tên khu" if "Tên khu" in df_cp.columns else None
+                    # Dùng dictionary thuần Python để gom nhóm theo ngày (chống mọi lỗi format)
+                    daily_stats = {}
                     
-                    if "EC yêu cầu" not in df_cp.columns or "Thời gian" not in df_cp.columns:
-                        st.error("File không hợp lệ: Cần có các trường 'Thời gian' và 'EC yêu cầu'.")
-                    elif not tank_col:
-                        st.error("File không hợp lệ: Không tìm thấy trường 'Tên bồn' hoặc 'Tên khu'.")
-                    else:
-                        df_cp_filtered = df_cp.filter(
-                            pl.col(tank_col).str.to_uppercase().str.contains(target_tank.strip())
-                        )
+                    for row in data_cp:
+                        # 1. Lọc bồn
+                        ten_bon = str(row.get("Tên bồn", row.get("Tên khu", ""))).upper()
+                        if target_tank not in ten_bon:
+                            continue
+                            
+                        # 2. Lấy thời gian (Chỉ lấy phần chữ trước dấu cách đầu tiên)
+                        time_raw = row.get("Thời gian", "")
+                        if not time_raw:
+                            continue
+                        date_str = str(time_raw).split()[0] # VD: "2023-12-05 10:30" -> "2023-12-05"
                         
-                        if df_cp_filtered.is_empty():
-                            st.warning(f"Không tìm thấy dữ liệu châm phân cho bồn: {target_tank}")
-                        else:
-                            # SỬA LỖI TẠI ĐÂY:
-                            # 1. str.slice(0, 10): Chỉ cắt lấy 10 ký tự đầu (YYYY-MM-DD) bỏ qua lỗi định dạng giờ
-                            # 2. str.extract(): Quét lấy đúng con số, lọc bỏ mọi ký tự thừa (khoảng trắng, chữ...)
-                            df_cp_clean = df_cp_filtered.with_columns([
-                                pl.col("Thời gian").str.slice(0, 10).str.to_date("%Y-%m-%d", strict=False).alias("Date"),
-                                (pl.col("EC yêu cầu").cast(pl.Utf8).str.extract(r"(\d+[.,]?\d*)").str.replace(",", ".").cast(pl.Float64, strict=False) / 100).alias("EC_Yeu_Cau_Thuc_Te")
-                            ]).drop_nulls(subset=["Date", "EC_Yeu_Cau_Thuc_Te"])
+                        # 3. Lấy và dọn dẹp EC Yêu Cầu
+                        ec_raw = row.get("EC yêu cầu")
+                        if not ec_raw:
+                            continue
+                        try:
+                            # Lấy phần số và chia 100
+                            ec_val = float(re.search(r"(\d+[.,]?\d*)", str(ec_raw)).group(1).replace(",", ".")) / 100
+                        except:
+                            continue
                             
-                            df_cp_daily = df_cp_clean.group_by("Date").agg([
-                                pl.col("EC_Yeu_Cau_Thuc_Te").mean().round(2).alias("Trung bình EC yêu cầu")
-                            ]).sort("Date")
-                            
-                            if df_cp_daily.is_empty():
-                                st.warning("Không có dữ liệu hợp lệ sau khi làm sạch. Vui lòng kiểm tra lại định dạng file.")
-                            else:
-                                st.success(f"Đã trích xuất thành công toàn bộ dữ liệu châm phân cho **{target_tank}**")
-                                
-                                fig_cp = px.line(df_cp_daily.to_pandas(), x="Date", y="Trung bình EC yêu cầu", 
-                                                 title=f"Biểu đồ mức EC mục tiêu trung bình theo ngày - {target_tank}",
-                                                 markers=True)
-                                fig_cp.update_layout(
-                                    xaxis_title="Thời gian (Ngày)", 
-                                    yaxis_title="Mức EC Yêu cầu (mS/cm)",
-                                    xaxis=dict(tickformat="%Y-%m-%d") # Ép trục X hiển thị rõ ngày tháng
-                                )
-                                st.plotly_chart(fig_cp, use_container_width=True)
-                                
-                                st.write("Bảng thống kê chi tiết toàn bộ chu kỳ:")
-                                st.dataframe(df_cp_daily, use_container_width=True, hide_index=True)
-                                
+                        # 4. Cộng dồn vào từ điển
+                        if date_str not in daily_stats:
+                            daily_stats[date_str] = {"sum": 0.0, "count": 0}
+                        
+                        daily_stats[date_str]["sum"] += ec_val
+                        daily_stats[date_str]["count"] += 1
+
+                    if not daily_stats:
+                        st.warning(f"Không tìm thấy dữ liệu EC yêu cầu hợp lệ cho {target_tank}")
+                    else:
+                        import pandas as pd
+                        
+                        # 5. Tính trung bình và tạo bảng Pandas
+                        plot_data = []
+                        for d, vals in daily_stats.items():
+                            plot_data.append({
+                                "Ngày chuỗi": d,
+                                "Trung bình EC yêu cầu": round(vals["sum"] / vals["count"], 2)
+                            })
+                        
+                        df_plot = pd.DataFrame(plot_data)
+                        
+                        # Ép kiểu thời gian linh hoạt bằng Pandas để vẽ biểu đồ cho đẹp
+                        # format='mixed' giúp Pandas tự đoán định dạng dù nó lộn xộn
+                        df_plot["Date"] = pd.to_datetime(df_plot["Ngày chuỗi"], format='mixed', dayfirst=True, errors='coerce')
+                        
+                        # Dùng Date chuẩn để sort, nếu dòng nào lỗi thì dùng lại chuỗi gốc
+                        df_plot["Date"] = df_plot["Date"].fillna(df_plot["Ngày chuỗi"])
+                        df_plot = df_plot.sort_values("Date")
+
+                        st.success(f"Đã trích xuất thành công toàn bộ dữ liệu châm phân cho **{target_tank}**")
+                        
+                        # Vẽ biểu đồ
+                        fig_cp = px.line(
+                            df_plot, 
+                            x="Date", 
+                            y="Trung bình EC yêu cầu", 
+                            title=f"Biểu đồ mức EC mục tiêu trung bình theo ngày - {target_tank}",
+                            markers=True
+                        )
+                        fig_cp.update_layout(xaxis_title="Ngày", yaxis_title="Mức EC Yêu cầu (mS/cm)")
+                        st.plotly_chart(fig_cp, use_container_width=True)
+                        
+                        # Hiển thị bảng chi tiết
+                        st.write("Bảng thống kê chi tiết toàn bộ chu kỳ:")
+                        st.dataframe(df_plot[["Ngày chuỗi", "Trung bình EC yêu cầu"]].rename(columns={"Ngày chuỗi": "Ngày thực tế"}), use_container_width=True, hide_index=True)
+
                 except Exception as e:
                     st.error(f"Lỗi xử lý hệ thống: {e}")
     else:
