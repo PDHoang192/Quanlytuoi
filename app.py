@@ -50,6 +50,7 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
 
     daily = df_pairs.group_by("Date").agg([
         pl.count().alias("turns"),
+        (pl.col("duration_s").sum() / 60).round(1).alias("total_time_min"), # Khôi phục tính tổng thời gian (phút)
         pl.col("val_ec_goc").mean().alias("avg_ec")
     ]).sort("Date")
 
@@ -65,19 +66,6 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
     
     seasons = seasons.filter(pl.col("Số ngày") >= min_season_days)
     return (df_pairs, seasons, daily), "Thành công"
-
-def get_stages(df, col, thresh):
-    dates, vals = df["Date"].to_list(), df[col].to_list()
-    stgs = []
-    if not vals: return stgs
-    curr_start, curr_grp, idx = dates[0], [vals[0]], 1
-    for i in range(1, len(vals)):
-        if abs(vals[i] - (sum(curr_grp)/len(curr_grp))) > thresh:
-            stgs.append({"n": f"GĐ {idx}", "s": curr_start, "e": dates[i-1], "c": idx})
-            curr_start, curr_grp, idx = dates[i], [vals[i]], idx + 1
-        else: curr_grp.append(vals[i])
-    stgs.append({"n": f"GĐ {idx}", "s": curr_start, "e": dates[-1], "c": idx})
-    return stgs
 
 # --- GIAO DIỆN CHÍNH ---
 with st.sidebar:
@@ -117,7 +105,7 @@ if uploaded_file:
         s_dicts = seasons.to_dicts()
         s_options = {f"Vụ {i+1} ({s['Bắt đầu']} -> {s['Kết thúc']})": s for i, s in enumerate(s_dicts)}
         
-        tab1, tab2, tab3 = st.tabs(["📋 Danh Sách Vụ & Nghỉ Đất", "📊 Biểu Đồ Đơn Biến", "🧠 Chia Giai Đoạn Đa Biến"])
+        tab1, tab2, tab3 = st.tabs(["📋 Danh Sách Vụ & Nghỉ Đất", "📊 Biểu Đồ Tổng Quan (Tab 2)", "🧠 Phân Tích Giai Đoạn Đa Biến (Tab 3)"])
 
         # ==========================================
         # TAB 1: DANH SÁCH VỤ (CÓ XEN KẼ NGHỈ ĐẤT)
@@ -144,43 +132,35 @@ if uploaded_file:
             st.table(display_seasons)
 
         # ==========================================
-        # TAB 2: BIỂU ĐỒ ĐƠN BIẾN
+        # TAB 2: BIỂU ĐỒ TỔNG QUAN (KHÔNG CHIA GIAI ĐOẠN)
         # ==========================================
         with tab2:
-            sel_label = st.selectbox("Chọn Vụ để phân tích biểu đồ:", options=list(s_options.keys()))
+            st.subheader("Biểu đồ thông số hàng ngày")
+            sel_label = st.selectbox("Chọn Vụ để xem biểu đồ:", options=list(s_options.keys()))
             curr_s = s_options[sel_label]
             df_s = daily.filter(pl.col("s_id") == curr_s["s_id"]).sort("Date")
 
-            c_t1, c_t2 = st.columns([3, 1])
-            with c_t2: err_turns = st.number_input("Sai số Lần tưới:", value=2.0, step=0.5, key="e_t")
-            stgs_t = get_stages(df_s, "turns", err_turns)
+            # 1. Số lần tưới
             fig_t = px.bar(df_s.to_pandas(), x="Date", y="turns", title="Số lần tưới / ngày", color_discrete_sequence=['#3366CC'])
-            for stg in stgs_t:
-                fig_t.add_vrect(x0=stg["s"], x1=stg["e"], fillcolor="green" if stg["c"]%2==0 else "red", opacity=0.1, line_width=0, annotation_text=stg["n"])
-            c_t1.plotly_chart(fig_t, use_container_width=True)
-
+            fig_t.update_xaxes(dtick="86400000", tickformat="%d-%m-%Y") # Tùy chọn hiển thị rõ ngày
+            st.plotly_chart(fig_t, use_container_width=True)
             st.divider()
-            c_e1, c_e2 = st.columns([3, 1])
-            with c_e2: err_ec = st.number_input("Sai số TBEC:", value=30.0, step=5.0, key="e_e")
-            stgs_e = get_stages(df_s, "avg_ec", err_ec)
-            fig_e = px.line(df_s.to_pandas(), x="Date", y="avg_ec", title="TBEC thực tế / ngày", markers=True)
-            for stg in stgs_e:
-                fig_e.add_vrect(x0=stg["s"], x1=stg["e"], fillcolor="blue" if stg["c"]%2==0 else "orange", opacity=0.1, line_width=0, annotation_text=stg["n"])
-            c_e1.plotly_chart(fig_e, use_container_width=True)
 
+            # 2. TBEC Thực tế
+            fig_e = px.line(df_s.to_pandas(), x="Date", y="avg_ec", title="TBEC thực tế / ngày", markers=True, color_discrete_sequence=['#FF9900'])
+            fig_e.update_xaxes(dtick="86400000", tickformat="%d-%m-%Y")
+            st.plotly_chart(fig_e, use_container_width=True)
+
+            # 3. EC Yêu cầu (Nếu có)
             df_s_req = df_s.drop_nulls(subset=["avg_req_ec"])
             if not df_s_req.is_empty():
                 st.divider()
-                c_r1, c_r2 = st.columns([3, 1])
-                with c_r2: err_req_ec = st.number_input("Sai số EC Yêu cầu:", value=12.0, step=2.0, key="e_req")
-                stgs_req = get_stages(df_s_req, "avg_req_ec", err_req_ec)
                 fig_req = px.line(df_s_req.to_pandas(), x="Date", y="avg_req_ec", title="EC Yêu Cầu Trung Bình / Ngày", markers=True, color_discrete_sequence=['#d62728'])
-                for stg in stgs_req:
-                    fig_req.add_vrect(x0=stg["s"], x1=stg["e"], fillcolor="pink" if stg["c"]%2==0 else "gray", opacity=0.1, line_width=0, annotation_text=stg["n"])
-                c_r1.plotly_chart(fig_req, use_container_width=True)
+                fig_req.update_xaxes(dtick="86400000", tickformat="%d-%m-%Y")
+                st.plotly_chart(fig_req, use_container_width=True)
 
         # ==========================================
-        # TAB 3: CHIA GIAI ĐOẠN ĐA BIẾN (GẮN NHÃN AN TOÀN)
+        # TAB 3: CHIA GIAI ĐOẠN ĐA BIẾN & CHI TIẾT TỪNG GIAI ĐOẠN
         # ==========================================
         with tab3:
             st.subheader("Thuật toán phân chia giai đoạn Đa biến (Tối thiểu 2 ngày)")
@@ -210,7 +190,7 @@ if uploaded_file:
                     "EC yêu cầu": th_req3
                 }
 
-            # --- CHẠY THUẬT TOÁN ---
+            # --- CHẠY THUẬT TOÁN ĐA BIẾN ---
             df_tab3 = daily.filter(pl.col("s_id") == s_options[sel_label_3]["s_id"]).sort("Date")
             
             if cols_to_check:
@@ -224,7 +204,7 @@ if uploaded_file:
                     vals = {k: {"data": df_tab3_clean[param_map[k]].to_list(), "th": th_map[k], "grp": []} for k in cols_to_check}
                     
                     stages_multi = []
-                    stage_labels = [] # Mảng lưu nhãn giai đoạn cho từng ngày để vẽ biểu đồ
+                    stage_labels = [] 
                     
                     curr_start = dates[0]
                     idx = 1
@@ -240,7 +220,6 @@ if uploaded_file:
                         
                         cut_stage = any(conds) if logic_mode.startswith("OR") else all(conds)
                         
-                        # LUẬT 2 NGÀY: Cắt nếu giai đoạn trước đó đã có từ 2 ngày trở lên
                         if cut_stage and len(vals[cols_to_check[0]]["grp"]) >= 2:
                             stages_multi.append({
                                 "Giai đoạn": f"GĐ {idx}", 
@@ -263,14 +242,12 @@ if uploaded_file:
                         "Số ngày": (dates[-1]-curr_start).days + 1
                     })
                     
-                    st.success(f"Đã chia thành **{len(stages_multi)}** giai đoạn (Đảm bảo tối thiểu 2 ngày/GĐ).")
+                    st.success(f"Đã chia thành **{len(stages_multi)}** giai đoạn.")
                     
-                    # --- VẼ BIỂU ĐỒ TRỰC QUAN ---
+                    # --- VẼ BIỂU ĐỒ TRỰC QUAN GIAI ĐOẠN ĐA BIẾN ---
                     st.divider()
                     
-                    # Chuyển sang pandas để vẽ bằng plotly
                     df_plot = df_tab3_clean.to_pandas()
-                    # Gắn trực tiếp mảng nhãn vừa lấy được trong lúc vòng lặp chạy, an toàn tuyệt đối
                     df_plot['Giai đoạn'] = stage_labels
                     
                     fig_multi = px.bar(
@@ -280,10 +257,42 @@ if uploaded_file:
                         color='Giai đoạn',
                         title=f"Biểu đồ phân chia giai đoạn (Thể hiện: {cols_to_check[0]})"
                     )
+                    
+                    # Ép Plotly hiển thị chi tiết tất cả các ngày trên trục X
+                    fig_multi.update_xaxes(
+                        dtick="86400000", # Bước nhảy 1 ngày (tính bằng mili-giây)
+                        tickformat="%d-%m-%Y",
+                        tickangle=-45 # Xoay nhãn nghiêng cho dễ đọc
+                    )
                     st.plotly_chart(fig_multi, use_container_width=True)
 
-                    # Bảng dữ liệu
+                    # Bảng tổng quan các giai đoạn
                     st.table(stages_multi)
+
+                    # --- XEM CHI TIẾT TỪNG GIAI ĐOẠN ---
+                    st.divider()
+                    st.markdown("### 🔎 Xem chi tiết thông số từng Giai đoạn")
+                    
+                    list_stages = [stg["Giai đoạn"] for stg in stages_multi]
+                    selected_stage = st.selectbox("Chọn giai đoạn:", list_stages)
+                    
+                    # Lọc dữ liệu theo Giai đoạn được chọn
+                    df_stage_detail = df_plot[df_plot['Giai đoạn'] == selected_stage].copy()
+                    
+                    # Định dạng lại bảng để hiển thị đẹp mắt
+                    df_stage_detail = df_stage_detail[['Date', 'turns', 'total_time_min', 'avg_ec', 'avg_req_ec']]
+                    df_stage_detail.columns = ['Ngày', 'Số lần tưới', 'Tổng thời gian (phút)', 'TBEC thực tế', 'EC Yêu cầu']
+                    
+                    # Format số thập phân cho dễ nhìn
+                    st.dataframe(
+                        df_stage_detail.style.format({
+                            'Tổng thời gian (phút)': '{:.1f}',
+                            'TBEC thực tế': '{:.2f}',
+                            'EC Yêu cầu': '{:.2f}'
+                        }),
+                        use_container_width=True,
+                        hide_index=True
+                    )
             else:
                 st.info("Vui lòng chọn ít nhất 1 thông số để chạy thuật toán.")
 
