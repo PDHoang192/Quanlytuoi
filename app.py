@@ -121,40 +121,97 @@ if uploaded_file:
             st.table(seasons.to_dicts())
 
         # TAB 2: LỌC NGÀY VÀ BIỂU ĐỒ THEO VỤ
-        with tab2:
-            st.subheader("Phân tích chi tiết theo Vụ & Ngày")
+        st.subheader("🔍 Phân Tích Giai Đoạn Trực Quan")
             
-            # 1. CHỌN VỤ
+            # --- CẤU HÌNH LỌC ---
             s_list = seasons.to_dicts()
             s_options = {f"Vụ {i+1} ({s['Start']} đến {s['End']})": s['s_id'] for i, s in enumerate(s_list)}
-            sel_s_label = st.selectbox("Chọn Vụ cần xem:", options=list(s_options.keys()))
-            sel_s_id = s_options[sel_s_label]
             
-            # Lấy dữ liệu của vụ được chọn
-            df_s_daily = daily.filter(pl.col("s_id") == sel_s_id)
+            c_sel1, c_sel2, c_sel3 = st.columns([2, 1, 1])
+            with c_sel1:
+                sel_s_label = st.selectbox("Chọn Vụ:", options=list(s_options.keys()))
+                sel_s_id = s_options[sel_s_label]
             
-            # 2. LỌC NGÀY TRONG TAB 2 (Giới hạn trong khoảng của Vụ đó)
-            col_d1, col_d2 = st.columns(2)
-            min_d_s = df_s_daily["Date"].min()
-            max_d_s = df_s_daily["Date"].max()
+            # Lấy dữ liệu vụ
+            df_s = daily.filter(pl.col("s_id") == sel_s_id).sort("Date")
             
-            with col_d1:
-                date_range = st.date_input("Lọc khoảng ngày trong vụ:", [min_d_s, max_d_s], min_value=min_d_s, max_value=max_d_s)
-            
-            if len(date_range) == 2:
-                # Lọc dữ liệu theo khoảng ngày đã chọn
-                df_final_plot = df_s_daily.filter((pl.col("Date") >= date_range[0]) & (pl.col("Date") <= date_range[1]))
+            with c_sel2:
+                # Ngưỡng để quyết định chia giai đoạn (Ví dụ: lệch 2 lần tưới hoặc 20 đơn vị EC)
+                threshold = st.number_input("Ngưỡng chia (Sai số):", value=3.0, step=0.5)
+            with c_sel3:
+                crit_col = st.selectbox("Chia theo:", ["turns", "avg_ec"], format_func=lambda x: "Số lần tưới" if x=="turns" else "TBEC")
+
+            # --- THUẬT TOÁN CHIA GIAI ĐOẠN TỰ ĐỘNG ---
+            dates = df_s["Date"].to_list()
+            values = df_s[crit_col].to_list()
+            stages = []
+            if len(values) > 0:
+                current_stage_start = dates[0]
+                current_stage_values = [values[0]]
+                stage_count = 1
                 
-                # 3. BIỂU ĐỒ
-                c1, c2 = st.columns(2)
-                fig_turns = px.bar(df_final_plot.to_pandas(), x="Date", y="turns", title="Số lần tưới mỗi ngày", color="turns", color_continuous_scale="Viridis")
-                c1.plotly_chart(fig_turns, use_container_width=True)
+                for i in range(1, len(values)):
+                    avg_val = sum(current_stage_values) / len(current_stage_values)
+                    # Nếu giá trị mới lệch quá ngưỡng so với trung bình giai đoạn hiện tại -> Cắt
+                    if abs(values[i] - avg_val) > threshold:
+                        stages.append({
+                            "name": f"GĐ {stage_count}",
+                            "start": current_stage_start,
+                            "end": dates[i-1],
+                            "color": "rgba(135, 206, 250, 0.3)" if stage_count % 2 == 0 else "rgba(255, 182, 193, 0.3)"
+                        })
+                        current_stage_start = dates[i]
+                        current_stage_values = [values[i]]
+                        stage_count += 1
+                    else:
+                        current_stage_values.append(values[i])
                 
-                fig_ec = px.line(df_final_plot.to_pandas(), x="Date", y="avg_ec", title="Biến thiên TBEC trung bình", markers=True)
-                c2.plotly_chart(fig_ec, use_container_width=True)
-                
-                st.write("**Bảng số liệu chi tiết trong khoảng ngày đã lọc:**")
-                st.dataframe(df_final_plot.drop("s_id", "is_new_season").to_pandas(), use_container_width=True, hide_index=True)
+                # Add giai đoạn cuối cùng
+                stages.append({
+                    "name": f"GĐ {stage_count}",
+                    "start": current_stage_start,
+                    "end": dates[-1],
+                    "color": "rgba(135, 206, 250, 0.3)" if stage_count % 2 == 0 else "rgba(255, 182, 193, 0.3)"
+                })
+
+            # --- VẼ BIỂU ĐỒ ---
+            # Biểu đồ Số lần tưới
+            fig1 = px.bar(df_s.to_pandas(), x="Date", y="turns", title=f"Giai đoạn dựa trên {crit_col}",
+                          color_discrete_sequence=['#3366CC'])
+            
+            # Biểu đồ TBEC
+            fig2 = px.line(df_s.to_pandas(), x="Date", y="avg_ec", title="Biến thiên TBEC & Các giai đoạn",
+                           markers=True, line_shape="spline")
+
+            # Thêm các vùng màu (Vrect) vào cả 2 biểu đồ
+            for stg in stages:
+                for f in [fig1, fig2]:
+                    f.add_vrect(
+                        x0=stg["start"], x1=stg["end"],
+                        fillcolor=stg["color"], opacity=0.5,
+                        layer="below", line_width=0,
+                        annotation_text=stg["name"], 
+                        annotation_position="top left"
+                    )
+
+            st.plotly_chart(fig1, use_container_width=True)
+            st.plotly_chart(fig2, use_container_width=True)
+            
+            # Hiển thị bảng tóm tắt các giai đoạn đã chia
+            st.write("**Tóm tắt thông số theo giai đoạn tự động:**")
+            summary_data = []
+            for stg in stages:
+                mask = (df_s["Date"] >= stg["start"]) & (df_s["Date"] <= stg["end"])
+                df_sub = df_s.filter(mask)
+                summary_data.append({
+                    "Giai đoạn": stg["name"],
+                    "Từ ngày": stg["start"],
+                    "Đến ngày": stg["end"],
+                    "Số ngày": len(df_sub),
+                    "Lần tưới TB": round(df_sub["turns"].mean(), 1),
+                    "EC TB": round(df_sub["avg_ec"].mean(), 2)
+                })
+            st.table(summary_data)
 
         # TAB 3: GIAI ĐOẠN (SAI SỐ 3.0)
         with tab3:
