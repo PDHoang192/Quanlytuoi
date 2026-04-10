@@ -180,7 +180,7 @@ if uploaded_file:
                 c_r1.plotly_chart(fig_req, use_container_width=True)
 
         # ==========================================
-        # TAB 3: CHIA GIAI ĐOẠN ĐA BIẾN (CÓ BIỂU ĐỒ & RULE 2 NGÀY)
+        # TAB 3: CHIA GIAI ĐOẠN ĐA BIẾN (TÔ MÀU TRỰC TIẾP CỘT)
         # ==========================================
         with tab3:
             st.subheader("Thuật toán phân chia giai đoạn Đa biến (Tối thiểu 2 ngày)")
@@ -261,20 +261,21 @@ if uploaded_file:
                     
                     st.success(f"Đã chia thành **{len(stages_multi)}** giai đoạn (Đảm bảo tối thiểu 2 ngày/GĐ).")
                     
-                    # --- BIỂU ĐỒ TRỰC QUAN GIAI ĐOẠN ĐA BIẾN ---
+                    # --- GẮN NHÃN VÀ VẼ BIỂU ĐỒ TRỰC QUAN ---
                     st.divider()
-                    fig_multi = px.bar(df_tab3_clean.to_pandas(), x="Date", y=param_map[cols_to_check[0]], 
-                                       title=f"Biểu đồ phân chia giai đoạn tổng hợp (Vẽ dựa trên {cols_to_check[0]})", 
-                                       color_discrete_sequence=['#8c564b'])
+                    df_plot = df_tab3_clean.to_pandas()
+                    df_plot['Giai đoạn'] = None
                     
+                    # Cập nhật nhãn Giai đoạn cho từng dòng dữ liệu
                     for stg in stages_multi:
-                        c_idx = int(stg["Giai đoạn"].split(" ")[1])
-                        fig_multi.add_vrect(
-                            x0=stg["Bắt đầu"], x1=stg["Kết thúc"], 
-                            fillcolor="cyan" if c_idx % 2 == 0 else "magenta", 
-                            opacity=0.1, line_width=0, annotation_text=stg["Giai đoạn"],
-                            annotation_position="top left"
-                        )
+                        mask = (df_plot['Date'] >= stg['Bắt đầu']) & (df_plot['Date'] <= stg['Kết thúc'])
+                        df_plot.loc[mask, 'Giai đoạn'] = stg['Giai đoạn']
+                    
+                    # Vẽ biểu đồ với màu sắc phân tách theo Giai đoạn
+                    fig_multi = px.bar(df_plot, x="Date", y=param_map[cols_to_check[0]], 
+                                       title=f"Biểu đồ phân chia giai đoạn (Thể hiện: {cols_to_check[0]})", 
+                                       color='Giai đoạn') # Trọng tâm thay đổi: Gán màu bằng cột 'Giai đoạn'
+                    
                     st.plotly_chart(fig_multi, use_container_width=True)
 
                     # Bảng dữ liệu Giai đoạn Đa biến
