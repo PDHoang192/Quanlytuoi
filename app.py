@@ -6,7 +6,7 @@ import ast
 import plotly.express as px
 
 # Cấu hình trang
-st.set_page_config(page_title="Hệ Thống Quản Lý Tưới", layout="wide", page_icon="🌱")
+st.set_page_config(page_title="Hệ Thống Phân Tích Tưới", layout="wide", page_icon="🌱")
 
 # --- HÀM XỬ LÝ DỮ LIỆU ---
 def parse_log_file(file_content):
@@ -29,13 +29,15 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
     except Exception as e:
         return None, f"Lỗi đọc file: {e}"
 
-    df = df.filter(pl.col("Tên khu").str.to_uppercase().str.contains(target_area.upper()))
-    if df.is_empty(): return None, f"Không tìm thấy dữ liệu cho {target_area}"
+    # Đảm bảo cột Tên khu tồn tại thì mới lọc, nếu không (như file châm phân) thì bỏ qua
+    if "Tên khu" in df.columns:
+        df = df.filter(pl.col("Tên khu").str.to_uppercase().str.contains(target_area.upper()))
+        if df.is_empty(): return None, f"Không tìm thấy dữ liệu cho {target_area}"
 
     df = df.with_columns([
         pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S", strict=False).alias("dt"),
-        pl.col("TBEC").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False),
-        pl.col("TBPH").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False)
+        pl.col("TBEC").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False) if "TBEC" in df.columns else pl.lit(None),
+        pl.col("EC yêu cầu").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False) if "EC yêu cầu" in df.columns else pl.lit(None)
     ]).drop_nulls(subset=["dt"]).sort("dt")
 
     df_on = df.filter(pl.col("Trạng thái").str.to_uppercase().str.strip_chars() == "BẬT")
@@ -50,7 +52,8 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
 
     daily = df_pairs.group_by("Date").agg([
         pl.count().alias("turns"),
-        pl.col("val_ec_goc").mean().alias("avg_ec")
+        pl.col("val_ec_goc").mean().alias("avg_ec"),
+        pl.col("duration_s").sum().alias("total_dur") # THÊM TỔNG THỜI GIAN TƯỚI
     ]).sort("Date")
 
     # Chia vụ mùa
@@ -66,82 +69,199 @@ def process_data(file_content, target_area, gap_limit, min_season_days):
     seasons = seasons.filter(pl.col("Số ngày") >= min_season_days)
     return (df_pairs, seasons, daily), "Thành công"
 
-# --- GIAO DIỆN ---
+def get_stages(df, col, thresh):
+    dates, vals = df["Date"].to_list(), df[col].to_list()
+    stgs = []
+    if not vals: return stgs
+    curr_start, curr_grp, idx = dates[0], [vals[0]], 1
+    for i in range(1, len(vals)):
+        if abs(vals[i] - (sum(curr_grp)/len(curr_grp))) > thresh:
+            stgs.append({"n": f"GĐ {idx}", "s": curr_start, "e": dates[i-1], "c": idx})
+            curr_start, curr_grp, idx = dates[i], [vals[i]], idx + 1
+        else: curr_grp.append(vals[i])
+    stgs.append({"n": f"GĐ {idx}", "s": curr_start, "e": dates[-1], "c": idx})
+    return stgs
+
+# --- GIAO DIỆN CHÍNH ---
 with st.sidebar:
-    st.header("⚙️ Cấu hình")
-    target_area = st.text_input("Khu vực:", "ANT-3").upper()
+    st.header("⚙️ Nguồn Dữ Liệu")
+    target_area = st.text_input("Mã khu vực:", "ANT-3").upper()
     gap_limit = st.slider("Ngày nghỉ để tách vụ:", 1, 15, 3)
     min_days = st.number_input("Ngày tối thiểu/vụ:", value=5)
-    uploaded_file = st.file_uploader("Tải file Log", type=['txt', 'json'])
+    uploaded_file = st.file_uploader("1. Tải file Log Tưới (Chính)", type=['txt', 'json'], key="main_log")
 
 if uploaded_file:
     res, msg = process_data(uploaded_file, target_area, gap_limit, min_days)
     
     if res:
         df_p, seasons, daily = res
-        tab1, tab2 = st.tabs(["📋 Danh Sách Vụ & Nghỉ Đất", "📊 Biểu Đồ Phân Tích"])
+        s_dicts = seasons.to_dicts()
+        s_options = {f"Vụ {i+1} ({s['Bắt đầu']} -> {s['Kết thúc']})": s for i, s in enumerate(s_dicts)}
+        
+        tab1, tab2, tab3 = st.tabs(["📋 Danh Sách Vụ & Nghỉ Đất", "📊 Biểu Đồ & Châm Phân", "🧠 Chia Giai Đoạn Đa Biến"])
 
-        # TAB 1: QUẢN LÝ VỤ MÙA
+        # ==========================================
+        # TAB 1: DANH SÁCH VỤ (CÓ XEN KẼ NGHỈ ĐẤT)
+        # ==========================================
         with tab1:
             st.subheader("Thông tin chu kỳ canh tác")
-            s_dicts = seasons.to_dicts()
-            final_seasons = []
+            display_seasons = []
             for i, s in enumerate(s_dicts):
-                s["STT"] = i + 1
+                # Tính thời gian nghỉ đất trước khi vào vụ mới
                 if i > 0:
                     prev_end = s_dicts[i-1]["Kết thúc"]
-                    rest_days = (s["Bắt đầu"] - prev_end).days
-                    s["Nghỉ đất (ngày)"] = rest_days
-                else:
-                    s["Nghỉ đất (ngày)"] = "-"
-                final_seasons.append(s)
+                    rest_days = (s["Bắt đầu"] - prev_end).days - 1
+                    display_seasons.append({
+                        "Giai đoạn": "⏳ Nghỉ đất", 
+                        "Bắt đầu": "-", 
+                        "Kết thúc": "-", 
+                        "Số ngày": rest_days if rest_days > 0 else 0
+                    })
+                # Thêm vụ mùa
+                display_seasons.append({
+                    "Giai đoạn": f"🌱 Vụ {i+1}", 
+                    "Bắt đầu": s["Bắt đầu"].strftime('%Y-%m-%d'), 
+                    "Kết thúc": s["Kết thúc"].strftime('%Y-%m-%d'), 
+                    "Số ngày": s["Số ngày"]
+                })
             
-            st.table(pl.DataFrame(final_seasons).select(["STT", "Bắt đầu", "Kết thúc", "Số ngày", "Nghỉ đất (ngày)"]).to_pandas())
+            st.table(display_seasons)
 
-        # TAB 2: BIỂU ĐỒ VỚI SAI SỐ RIÊNG BIỆT
+        # ==========================================
+        # TAB 2: BIỂU ĐỒ & FILE CHÂM PHÂN
+        # ==========================================
         with tab2:
-            s_options = {f"Vụ {i+1} ({s['Bắt đầu']} -> {s['Kết thúc']})": s['s_id'] for i, s in enumerate(s_dicts)}
-            sel_label = st.selectbox("Chọn Vụ để xem biểu đồ:", options=list(s_options.keys()))
-            df_s = daily.filter(pl.col("s_id") == s_options[sel_label]).sort("Date")
-
-            def get_stages(df, col, thresh):
-                dates, vals = df["Date"].to_list(), df[col].to_list()
-                stgs = []
-                if not vals: return stgs
-                curr_start, curr_grp, idx = dates[0], [vals[0]], 1
-                for i in range(1, len(vals)):
-                    if abs(vals[i] - (sum(curr_grp)/len(curr_grp))) > thresh:
-                        stgs.append({"n": f"GĐ {idx}", "s": curr_start, "e": dates[i-1], "c": idx})
-                        curr_start, curr_grp, idx = dates[i], [vals[i]], idx + 1
-                    else: curr_grp.append(vals[i])
-                stgs.append({"n": f"GĐ {idx}", "s": curr_start, "e": dates[-1], "c": idx})
-                return stgs
+            sel_label = st.selectbox("Chọn Vụ để phân tích biểu đồ:", options=list(s_options.keys()))
+            curr_s = s_options[sel_label]
+            df_s = daily.filter(pl.col("s_id") == curr_s["s_id"]).sort("Date")
 
             # --- BIỂU ĐỒ 1: SỐ LẦN TƯỚI ---
-            st.divider()
-            col_t1, col_t2 = st.columns([3, 1])
-            with col_t2: 
-                err_turns = st.number_input("Sai số Lần tưới:", value=2.0, step=0.5, key="err_t")
-            
+            c_t1, c_t2 = st.columns([3, 1])
+            with c_t2: err_turns = st.number_input("Sai số Lần tưới:", value=2.0, step=0.5, key="e_t")
             stgs_t = get_stages(df_s, "turns", err_turns)
-            fig_t = px.bar(df_s.to_pandas(), x="Date", y="turns", title="Biểu đồ Số lần tưới", color_discrete_sequence=['#3366CC'])
+            fig_t = px.bar(df_s.to_pandas(), x="Date", y="turns", title="Số lần tưới / ngày", color_discrete_sequence=['#3366CC'])
             for stg in stgs_t:
-                fig_t.add_vrect(x0=stg["s"], x1=stg["e"], fillcolor="green" if stg["c"]%2==0 else "red", 
-                                opacity=0.1, layer="below", line_width=0, annotation_text=stg["n"])
-            st.plotly_chart(fig_t, use_container_width=True)
+                fig_t.add_vrect(x0=stg["s"], x1=stg["e"], fillcolor="green" if stg["c"]%2==0 else "red", opacity=0.1, line_width=0, annotation_text=stg["n"])
+            c_t1.plotly_chart(fig_t, use_container_width=True)
 
-            # --- BIỂU ĐỒ 2: TBEC ---
+            # --- BIỂU ĐỒ 2: TỔNG THỜI GIAN TƯỚI (MỚI) ---
             st.divider()
-            col_e1, col_e2 = st.columns([3, 1])
-            with col_e2: 
-                err_ec = st.number_input("Sai số TBEC:", value=0.2, step=0.05, key="err_e")
-            
+            c_d1, c_d2 = st.columns([3, 1])
+            with c_d2: err_dur = st.number_input("Sai số Tổng TG (giây):", value=500.0, step=100.0, key="e_d")
+            stgs_d = get_stages(df_s, "total_dur", err_dur)
+            fig_d = px.area(df_s.to_pandas(), x="Date", y="total_dur", title="Tổng thời gian tưới (Giây) / ngày", color_discrete_sequence=['#17becf'])
+            for stg in stgs_d:
+                fig_d.add_vrect(x0=stg["s"], x1=stg["e"], fillcolor="purple" if stg["c"]%2==0 else "yellow", opacity=0.1, line_width=0, annotation_text=stg["n"])
+            c_d1.plotly_chart(fig_d, use_container_width=True)
+
+            # --- BIỂU ĐỒ 3: TBEC THỰC TẾ ---
+            st.divider()
+            c_e1, c_e2 = st.columns([3, 1])
+            with c_e2: err_ec = st.number_input("Sai số TBEC:", value=0.2, step=0.05, key="e_e")
             stgs_e = get_stages(df_s, "avg_ec", err_ec)
-            fig_e = px.line(df_s.to_pandas(), x="Date", y="avg_ec", title="Biểu đồ Chỉ số TBEC", markers=True)
+            fig_e = px.line(df_s.to_pandas(), x="Date", y="avg_ec", title="TBEC thực tế / ngày", markers=True)
             for stg in stgs_e:
-                fig_e.add_vrect(x0=stg["s"], x1=stg["e"], fillcolor="blue" if stg["c"]%2==0 else "orange", 
-                                opacity=0.1, layer="below", line_width=0, annotation_text=stg["n"])
-            st.plotly_chart(fig_e, use_container_width=True)
+                fig_e.add_vrect(x0=stg["s"], x1=stg["e"], fillcolor="blue" if stg["c"]%2==0 else "orange", opacity=0.1, line_width=0, annotation_text=stg["n"])
+            c_e1.plotly_chart(fig_e, use_container_width=True)
+
+            # --- UPLOAD FILE CHÂM PHÂN (EC YÊU CẦU) ---
+            st.divider()
+            st.subheader("💧 Tích hợp dữ liệu Châm Phân (EC Yêu Cầu)")
+            fert_file = st.file_uploader("2. Tải file JSON Châm Phân:", type=['json', 'txt'], key="fert_log")
+            
+            if fert_file:
+                try:
+                    fert_data = parse_log_file(fert_file)
+                    df_fert = pl.DataFrame(fert_data)
+                    df_fert = df_fert.with_columns([
+                        pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S", strict=False).dt.date().alias("Date"),
+                        pl.col("EC yêu cầu").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False)
+                    ]).drop_nulls(subset=["Date", "EC yêu cầu"])
+                    
+                    # Lọc theo khoảng thời gian của Vụ đang chọn
+                    df_fert_s = df_fert.filter((pl.col("Date") >= curr_s["Bắt đầu"]) & (pl.col("Date") <= curr_s["Kết thúc"]))
+                    df_fert_daily = df_fert_s.group_by("Date").agg([pl.col("EC yêu cầu").mean().alias("avg_req_ec")]).sort("Date")
+                    
+                    if not df_fert_daily.is_empty():
+                        c_r1, c_r2 = st.columns([3, 1])
+                        with c_r2: err_req_ec = st.number_input("Sai số EC Yêu cầu:", value=0.1, step=0.05, key="e_req")
+                        stgs_req = get_stages(df_fert_daily, "avg_req_ec", err_req_ec)
+                        
+                        fig_req = px.line(df_fert_daily.to_pandas(), x="Date", y="avg_req_ec", title="EC Yêu Cầu Trung Bình / Ngày", markers=True, color_discrete_sequence=['#d62728'])
+                        for stg in stgs_req:
+                            fig_req.add_vrect(x0=stg["s"], x1=stg["e"], fillcolor="pink" if stg["c"]%2==0 else "gray", opacity=0.1, line_width=0, annotation_text=stg["n"])
+                        c_r1.plotly_chart(fig_req, use_container_width=True)
+                    else:
+                        st.warning("Không có dữ liệu EC yêu cầu trong thời gian của Vụ này.")
+                except Exception as e:
+                    st.error(f"Lỗi đọc file châm phân: {e}")
+
+        # ==========================================
+        # TAB 3: CHIA GIAI ĐOẠN ĐA BIẾN (AND / OR)
+        # ==========================================
+        with tab3:
+            st.subheader("Thuật toán phân chia giai đoạn Đa biến (Multi-variable)")
+            st.write("Cắt giai đoạn dựa trên sự thay đổi đồng thời của nhiều thông số.")
+            
+            col_cfg1, col_cfg2 = st.columns(2)
+            with col_cfg1:
+                sel_label_3 = st.selectbox("Chọn Vụ (Tab 3):", options=list(s_options.keys()), key="s_tab3")
+                df_tab3 = daily.filter(pl.col("s_id") == s_options[sel_label_3]["s_id"]).sort("Date")
+                
+                cols_to_check = st.multiselect("Chọn các thông số tham gia xét duyệt:", 
+                                               options={"Số lần tưới": "turns", "TBEC thực tế": "avg_ec", "Tổng TG (s)": "total_dur"},
+                                               default=["Số lần tưới", "TBEC thực tế"])
+                logic_mode = st.radio("Cơ chế cắt (Logic Gate):", ["OR (Chỉ cần 1 thông số vượt ngưỡng)", "AND (Tất cả phải vượt ngưỡng)"])
+            
+            with col_cfg2:
+                th_t3 = st.number_input("Ngưỡng: Số lần tưới", value=2.0, step=0.5)
+                th_e3 = st.number_input("Ngưỡng: TBEC", value=0.2, step=0.05)
+                th_d3 = st.number_input("Ngưỡng: Tổng TG", value=500.0, step=50.0)
+            
+            # --- CHẠY THUẬT TOÁN ĐA BIẾN ---
+            if not df_tab3.is_empty() and cols_to_check:
+                dates = df_tab3["Date"].to_list()
+                vals = {
+                    "Số lần tưới": {"data": df_tab3["turns"].to_list(), "th": th_t3, "grp": []},
+                    "TBEC thực tế": {"data": df_tab3["avg_ec"].to_list(), "th": th_e3, "grp": []},
+                    "Tổng TG (s)": {"data": df_tab3["total_dur"].to_list(), "th": th_d3, "grp": []}
+                }
+                
+                stages_multi = []
+                curr_start = dates[0]
+                idx = 1
+                
+                # Khởi tạo nhóm đầu tiên
+                for k in cols_to_check:
+                    vals[k]["grp"] = [vals[k]["data"][0]]
+                
+                for i in range(1, len(dates)):
+                    conds = []
+                    # Kiểm tra xem thông số nào vượt ngưỡng
+                    for k in cols_to_check:
+                        avg_grp = sum(vals[k]["grp"]) / len(vals[k]["grp"])
+                        if abs(vals[k]["data"][i] - avg_grp) > vals[k]["th"]:
+                            conds.append(True)
+                        else:
+                            conds.append(False)
+                    
+                    # Logic Gate
+                    cut_stage = any(conds) if logic_mode.startswith("OR") else all(conds)
+                    
+                    if cut_stage and len(conds) > 0:
+                        stages_multi.append({"Giai đoạn": f"GĐ {idx}", "Bắt đầu": curr_start, "Kết thúc": dates[i-1], "Số ngày": (dates[i-1]-curr_start).days + 1})
+                        curr_start = dates[i]
+                        for k in cols_to_check: vals[k]["grp"] = [vals[k]["data"][i]]
+                        idx += 1
+                    else:
+                        for k in cols_to_check: vals[k]["grp"].append(vals[k]["data"][i])
+                        
+                stages_multi.append({"Giai đoạn": f"GĐ {idx}", "Bắt đầu": curr_start, "Kết thúc": dates[-1], "Số ngày": (dates[-1]-curr_start).days + 1})
+                
+                st.success(f"Dựa trên cơ chế **{logic_mode[:3]}**, Vụ đã được chia thành **{len(stages_multi)}** giai đoạn.")
+                st.table(stages_multi)
+            else:
+                st.info("Vui lòng chọn ít nhất 1 thông số để chạy thuật toán.")
 
     else:
         st.error(msg)
