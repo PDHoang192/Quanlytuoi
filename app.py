@@ -86,7 +86,7 @@ with st.sidebar:
     gap_limit = st.slider("Ngày nghỉ để tách vụ:", 1, 15, 3)
     min_days = st.number_input("Ngày tối thiểu/vụ:", value=5)
     uploaded_file = st.file_uploader("1. Tải file Log Tưới (Chính)", type=['txt', 'json'], key="main_log")
-    fert_file = st.file_uploader("2. Tải file Log Châm Phân (Tùy chọn - để lấy EC Yêu Cầu)", type=['txt', 'json'], key="fert_log")
+    fert_file = st.file_uploader("2. Tải file Log Châm Phân (Để lấy EC Yêu Cầu)", type=['txt', 'json'], key="fert_log")
 
 if uploaded_file:
     res, msg = process_data(uploaded_file, target_area, gap_limit, min_days)
@@ -94,7 +94,7 @@ if uploaded_file:
     if res:
         df_p, seasons, daily = res
         
-        # --- TÍCH HỢP DỮ LIỆU FILE CHÂM PHÂN NẾU CÓ ---
+        # --- TÍCH HỢP DỮ LIỆU FILE CHÂM PHÂN ---
         daily = daily.with_columns(pl.lit(None).cast(pl.Float64).alias("avg_req_ec"))
         if fert_file:
             try:
@@ -144,14 +144,13 @@ if uploaded_file:
             st.table(display_seasons)
 
         # ==========================================
-        # TAB 2: BIỂU ĐỒ (BỎ TỔNG THỜI GIAN TƯỚI)
+        # TAB 2: BIỂU ĐỒ ĐƠN BIẾN
         # ==========================================
         with tab2:
             sel_label = st.selectbox("Chọn Vụ để phân tích biểu đồ:", options=list(s_options.keys()))
             curr_s = s_options[sel_label]
             df_s = daily.filter(pl.col("s_id") == curr_s["s_id"]).sort("Date")
 
-            # --- BIỂU ĐỒ 1: SỐ LẦN TƯỚI ---
             c_t1, c_t2 = st.columns([3, 1])
             with c_t2: err_turns = st.number_input("Sai số Lần tưới:", value=2.0, step=0.5, key="e_t")
             stgs_t = get_stages(df_s, "turns", err_turns)
@@ -160,7 +159,6 @@ if uploaded_file:
                 fig_t.add_vrect(x0=stg["s"], x1=stg["e"], fillcolor="green" if stg["c"]%2==0 else "red", opacity=0.1, line_width=0, annotation_text=stg["n"])
             c_t1.plotly_chart(fig_t, use_container_width=True)
 
-            # --- BIỂU ĐỒ 2: TBEC THỰC TẾ ---
             st.divider()
             c_e1, c_e2 = st.columns([3, 1])
             with c_e2: err_ec = st.number_input("Sai số TBEC:", value=30.0, step=5.0, key="e_e")
@@ -170,7 +168,6 @@ if uploaded_file:
                 fig_e.add_vrect(x0=stg["s"], x1=stg["e"], fillcolor="blue" if stg["c"]%2==0 else "orange", opacity=0.1, line_width=0, annotation_text=stg["n"])
             c_e1.plotly_chart(fig_e, use_container_width=True)
 
-            # --- BIỂU ĐỒ 3: EC YÊU CẦU (NẾU CÓ DỮ LIỆU) ---
             df_s_req = df_s.drop_nulls(subset=["avg_req_ec"])
             if not df_s_req.is_empty():
                 st.divider()
@@ -183,11 +180,10 @@ if uploaded_file:
                 c_r1.plotly_chart(fig_req, use_container_width=True)
 
         # ==========================================
-        # TAB 3: CHIA GIAI ĐOẠN ĐA BIẾN (AND / OR)
+        # TAB 3: CHIA GIAI ĐOẠN ĐA BIẾN (CÓ BIỂU ĐỒ & RULE 2 NGÀY)
         # ==========================================
         with tab3:
-            st.subheader("Thuật toán phân chia giai đoạn Đa biến (Multi-variable)")
-            st.write("Cắt giai đoạn dựa trên sự thay đổi đồng thời của nhiều thông số.")
+            st.subheader("Thuật toán phân chia giai đoạn Đa biến (Tối thiểu 2 ngày)")
             
             param_map = {
                 "Số lần tưới": "turns",
@@ -198,7 +194,7 @@ if uploaded_file:
             col_cfg1, col_cfg2 = st.columns(2)
             with col_cfg1:
                 sel_label_3 = st.selectbox("Chọn Vụ (Tab 3):", options=list(s_options.keys()), key="s_tab3")
-                cols_to_check = st.multiselect("Chọn các thông số tham gia xét duyệt:", 
+                cols_to_check = st.multiselect("Chọn thông số tham gia xét duyệt:", 
                                                options=list(param_map.keys()),
                                                default=["Số lần tưới", "TBEC thực tế"])
                 logic_mode = st.radio("Cơ chế cắt (Logic Gate):", ["OR (Chỉ cần 1 thông số vượt ngưỡng)", "AND (Tất cả phải vượt ngưỡng)"])
@@ -214,16 +210,15 @@ if uploaded_file:
                     "EC yêu cầu": th_req3
                 }
 
-            # --- CHẠY THUẬT TOÁN ĐA BIẾN ---
+            # --- CHẠY THUẬT TOÁN ---
             df_tab3 = daily.filter(pl.col("s_id") == s_options[sel_label_3]["s_id"]).sort("Date")
             
             if cols_to_check:
-                # Chỉ lấy những ngày có đủ dữ liệu cho các cột được chọn
                 req_cols = [param_map[k] for k in cols_to_check]
                 df_tab3_clean = df_tab3.drop_nulls(subset=req_cols)
                 
                 if df_tab3_clean.is_empty():
-                    st.warning("⚠️ Không đủ dữ liệu để xét duyệt (Gợi ý: Cần tải file Châm phân ở Sidebar nếu bạn chọn tiêu chí 'EC yêu cầu').")
+                    st.warning("⚠️ Không đủ dữ liệu để xét duyệt (Gợi ý: Cần tải file Châm phân ở Sidebar nếu chọn 'EC yêu cầu').")
                 else:
                     dates = df_tab3_clean["Date"].to_list()
                     vals = {k: {"data": df_tab3_clean[param_map[k]].to_list(), "th": th_map[k], "grp": []} for k in cols_to_check}
@@ -238,24 +233,51 @@ if uploaded_file:
                         conds = []
                         for k in cols_to_check:
                             avg_grp = sum(vals[k]["grp"]) / len(vals[k]["grp"])
-                            if abs(vals[k]["data"][i] - avg_grp) > vals[k]["th"]:
-                                conds.append(True)
-                            else:
-                                conds.append(False)
+                            conds.append(abs(vals[k]["data"][i] - avg_grp) > vals[k]["th"])
                         
                         cut_stage = any(conds) if logic_mode.startswith("OR") else all(conds)
                         
-                        if cut_stage and len(conds) > 0:
-                            stages_multi.append({"Giai đoạn": f"GĐ {idx}", "Bắt đầu": curr_start, "Kết thúc": dates[i-1], "Số ngày": (dates[i-1]-curr_start).days + 1})
+                        # LUẬT 2 NGÀY: Chỉ cắt nếu giai đoạn ĐÃ TÍCH LŨY được từ 2 ngày trở lên
+                        if cut_stage and len(vals[cols_to_check[0]]["grp"]) >= 2:
+                            stages_multi.append({
+                                "Giai đoạn": f"GĐ {idx}", 
+                                "Bắt đầu": curr_start, 
+                                "Kết thúc": dates[i-1], 
+                                "Số ngày": (dates[i-1]-curr_start).days + 1
+                            })
                             curr_start = dates[i]
                             for k in cols_to_check: vals[k]["grp"] = [vals[k]["data"][i]]
                             idx += 1
                         else:
+                            # Nếu chưa đủ 2 ngày hoặc không có biến động, tiếp tục gộp dữ liệu
                             for k in cols_to_check: vals[k]["grp"].append(vals[k]["data"][i])
                             
-                    stages_multi.append({"Giai đoạn": f"GĐ {idx}", "Bắt đầu": curr_start, "Kết thúc": dates[-1], "Số ngày": (dates[-1]-curr_start).days + 1})
+                    stages_multi.append({
+                        "Giai đoạn": f"GĐ {idx}", 
+                        "Bắt đầu": curr_start, 
+                        "Kết thúc": dates[-1], 
+                        "Số ngày": (dates[-1]-curr_start).days + 1
+                    })
                     
-                    st.success(f"Dựa trên cơ chế **{logic_mode[:3]}**, Vụ đã được chia thành **{len(stages_multi)}** giai đoạn.")
+                    st.success(f"Đã chia thành **{len(stages_multi)}** giai đoạn (Đảm bảo tối thiểu 2 ngày/GĐ).")
+                    
+                    # --- BIỂU ĐỒ TRỰC QUAN GIAI ĐOẠN ĐA BIẾN ---
+                    st.divider()
+                    fig_multi = px.bar(df_tab3_clean.to_pandas(), x="Date", y=param_map[cols_to_check[0]], 
+                                       title=f"Biểu đồ phân chia giai đoạn tổng hợp (Vẽ dựa trên {cols_to_check[0]})", 
+                                       color_discrete_sequence=['#8c564b'])
+                    
+                    for stg in stages_multi:
+                        c_idx = int(stg["Giai đoạn"].split(" ")[1])
+                        fig_multi.add_vrect(
+                            x0=stg["Bắt đầu"], x1=stg["Kết thúc"], 
+                            fillcolor="cyan" if c_idx % 2 == 0 else "magenta", 
+                            opacity=0.1, line_width=0, annotation_text=stg["Giai đoạn"],
+                            annotation_position="top left"
+                        )
+                    st.plotly_chart(fig_multi, use_container_width=True)
+
+                    # Bảng dữ liệu Giai đoạn Đa biến
                     st.table(stages_multi)
             else:
                 st.info("Vui lòng chọn ít nhất 1 thông số để chạy thuật toán.")
