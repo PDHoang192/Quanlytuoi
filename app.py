@@ -180,7 +180,7 @@ if uploaded_file:
                 c_r1.plotly_chart(fig_req, use_container_width=True)
 
         # ==========================================
-        # TAB 3: CHIA GIAI ĐOẠN ĐA BIẾN (TÔ MÀU TRỰC TIẾP CỘT)
+        # TAB 3: CHIA GIAI ĐOẠN ĐA BIẾN (GẮN NHÃN AN TOÀN)
         # ==========================================
         with tab3:
             st.subheader("Thuật toán phân chia giai đoạn Đa biến (Tối thiểu 2 ngày)")
@@ -218,16 +218,19 @@ if uploaded_file:
                 df_tab3_clean = df_tab3.drop_nulls(subset=req_cols)
                 
                 if df_tab3_clean.is_empty():
-                    st.warning("⚠️ Không đủ dữ liệu để xét duyệt (Gợi ý: Cần tải file Châm phân ở Sidebar nếu chọn 'EC yêu cầu').")
+                    st.warning("⚠️ Không đủ dữ liệu để xét duyệt. Vui lòng kiểm tra lại file tải lên.")
                 else:
                     dates = df_tab3_clean["Date"].to_list()
                     vals = {k: {"data": df_tab3_clean[param_map[k]].to_list(), "th": th_map[k], "grp": []} for k in cols_to_check}
                     
                     stages_multi = []
+                    stage_labels = [] # Mảng lưu nhãn giai đoạn cho từng ngày để vẽ biểu đồ
+                    
                     curr_start = dates[0]
                     idx = 1
                     
                     for k in cols_to_check: vals[k]["grp"] = [vals[k]["data"][0]]
+                    stage_labels.append(f"GĐ {idx}")
                     
                     for i in range(1, len(dates)):
                         conds = []
@@ -237,7 +240,7 @@ if uploaded_file:
                         
                         cut_stage = any(conds) if logic_mode.startswith("OR") else all(conds)
                         
-                        # LUẬT 2 NGÀY: Chỉ cắt nếu giai đoạn ĐÃ TÍCH LŨY được từ 2 ngày trở lên
+                        # LUẬT 2 NGÀY: Cắt nếu giai đoạn trước đó đã có từ 2 ngày trở lên
                         if cut_stage and len(vals[cols_to_check[0]]["grp"]) >= 2:
                             stages_multi.append({
                                 "Giai đoạn": f"GĐ {idx}", 
@@ -248,9 +251,10 @@ if uploaded_file:
                             curr_start = dates[i]
                             for k in cols_to_check: vals[k]["grp"] = [vals[k]["data"][i]]
                             idx += 1
+                            stage_labels.append(f"GĐ {idx}")
                         else:
-                            # Nếu chưa đủ 2 ngày hoặc không có biến động, tiếp tục gộp dữ liệu
                             for k in cols_to_check: vals[k]["grp"].append(vals[k]["data"][i])
+                            stage_labels.append(f"GĐ {idx}")
                             
                     stages_multi.append({
                         "Giai đoạn": f"GĐ {idx}", 
@@ -261,24 +265,24 @@ if uploaded_file:
                     
                     st.success(f"Đã chia thành **{len(stages_multi)}** giai đoạn (Đảm bảo tối thiểu 2 ngày/GĐ).")
                     
-                    # --- GẮN NHÃN VÀ VẼ BIỂU ĐỒ TRỰC QUAN ---
+                    # --- VẼ BIỂU ĐỒ TRỰC QUAN ---
                     st.divider()
+                    
+                    # Chuyển sang pandas để vẽ bằng plotly
                     df_plot = df_tab3_clean.to_pandas()
-                    df_plot['Giai đoạn'] = None
+                    # Gắn trực tiếp mảng nhãn vừa lấy được trong lúc vòng lặp chạy, an toàn tuyệt đối
+                    df_plot['Giai đoạn'] = stage_labels
                     
-                    # Cập nhật nhãn Giai đoạn cho từng dòng dữ liệu
-                    for stg in stages_multi:
-                        mask = (df_plot['Date'] >= stg['Bắt đầu']) & (df_plot['Date'] <= stg['Kết thúc'])
-                        df_plot.loc[mask, 'Giai đoạn'] = stg['Giai đoạn']
-                    
-                    # Vẽ biểu đồ với màu sắc phân tách theo Giai đoạn
-                    fig_multi = px.bar(df_plot, x="Date", y=param_map[cols_to_check[0]], 
-                                       title=f"Biểu đồ phân chia giai đoạn (Thể hiện: {cols_to_check[0]})", 
-                                       color='Giai đoạn') # Trọng tâm thay đổi: Gán màu bằng cột 'Giai đoạn'
-                    
+                    fig_multi = px.bar(
+                        df_plot, 
+                        x="Date", 
+                        y=param_map[cols_to_check[0]], 
+                        color='Giai đoạn',
+                        title=f"Biểu đồ phân chia giai đoạn (Thể hiện: {cols_to_check[0]})"
+                    )
                     st.plotly_chart(fig_multi, use_container_width=True)
 
-                    # Bảng dữ liệu Giai đoạn Đa biến
+                    # Bảng dữ liệu
                     st.table(stages_multi)
             else:
                 st.info("Vui lòng chọn ít nhất 1 thông số để chạy thuật toán.")
