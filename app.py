@@ -215,7 +215,3 @@ if uploaded_file:
                             # 4. Concat an toàn
                             df_final = pl.concat([df_det, df_avg])
                             st.dataframe(df_final, use_container_width=True, hide_index=True)
-                        else:
-                            st.warning("Dữ liệu không đủ để phân tích giai đoạn.")
-        else:
-            st.error(msg)
