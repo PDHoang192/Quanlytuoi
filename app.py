@@ -137,7 +137,7 @@ if uploaded_file:
                         f2.add_trace(go.Scatter(x=df_v["Date"], y=df_v["avg_req_ec"], name="EC Yêu cầu", line=dict(dash='dash')))
                     st.plotly_chart(f2, use_container_width=True)
 
-                                with t3:
+                with t3:
                     p_map = {
                         "Số lần tưới": "turns",
                         "TBEC thực tế": "avg_ec",
