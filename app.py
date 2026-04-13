@@ -170,7 +170,7 @@ if uploaded_file:
                                         avg = sum(v_data[c]["g"]) / len(v_data[c]["g"])
                                         conds.append(abs(v_data[c]["d"][i] - avg) > th_map[c])
                                     else: conds.append(False)
-                                if (any(conds) if mode == "OR" else all(conds)) and len(v_data[cols[0]]["g"]) >= 2:
+                                if (any(conds) if mode == "OR" else all(conds)):
                                     stgs.append({"Giai đoạn": f"GĐ {idx}", "Bắt đầu": c_s, "Kết thúc": dts[i-1]})
                                     c_s, idx = dts[i], idx + 1
                                     for c in cols: v_data[c]["g"] = []
