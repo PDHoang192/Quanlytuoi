@@ -146,7 +146,7 @@ with tab1:
                             if (r_e - r_s).days >= 0:
                                 rows.append({"Đối tượng": "⏳ Nghỉ đất", "Từ": r_s, "Đến": r_e, "Số ngày": (r_e - r_s).days + 1})
                         rows.append({"Đối tượng": f"🌱 Vụ {i+1}", "Từ": s["Bắt đầu"], "Đến": s["Kết thúc"], "Số ngày": s["Số ngày"]})
-                    st.table(rows)
+    st.table(rows)
 
 with tab2:
     sel_v = st.selectbox("Chọn Vụ:", list(s_opts.keys()), key="v2")
