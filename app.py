@@ -162,7 +162,7 @@ if uploaded_file:
                                       yaxis=dict(title="mS/cm"), hovermode="x unified")
                     st.plotly_chart(fig2, use_container_width=True)
 
-                with tab3:
+                with t3:
                     st.subheader("Thuật toán phân chia giai đoạn Đa biến")
                     param_map = {"Số lần tưới": "turns", "TBEC thực tế": "avg_ec", "EC yêu cầu": "avg_req_ec"}
                     
