@@ -162,59 +162,76 @@ if uploaded_file:
                                       yaxis=dict(title="mS/cm"), hovermode="x unified")
                     st.plotly_chart(fig2, use_container_width=True)
 
-                with t3:
-                    st.subheader("Phân tích chi tiết theo giai đoạn tự động")
-                    p_map = {"Số lần tưới": "turns", "TBEC thực tế": "avg_ec", "EC yêu cầu": "avg_req_ec"}
+                with tab3:
+                    st.subheader("Thuật toán phân chia giai đoạn Đa biến")
+                    param_map = {"Số lần tưới": "turns", "TBEC thực tế": "avg_ec", "EC yêu cầu": "avg_req_ec"}
+                    
                     c1, c2 = st.columns(2)
                     with c1:
-                        sel_v3 = st.selectbox("Chọn Vụ:", options=list(s_opts.keys()), key="v3")
-                        cols = st.multiselect("Thông số tách Giai đoạn:", options=list(p_map.keys()), default=["Số lần tưới", "TBEC thực tế"])
-                        mode = st.radio("Logic cắt:", ["OR", "AND"], horizontal=True)
+                        sel_label_3 = st.selectbox("Chọn Vụ (Tab 3):", options=list(s_options.keys()))
+                        cols_to_check = st.multiselect("Thông số xét duyệt:", options=list(param_map.keys()), default=["Số lần tưới", "TBEC thực tế"])
+                        logic_mode = st.radio("Cơ chế cắt:", ["OR", "AND"])
                     with c2:
-                        th_t = st.number_input("Ngưỡng Lần tưới", value=2.0)
-                        th_e = st.number_input("Ngưỡng TBEC", value=30.0)
-                        th_map = {"Số lần tưới": th_t, "TBEC thực tế": th_e, "EC yêu cầu": 12.0}
+                        th_t3 = st.number_input("Ngưỡng: Số lần tưới", value=2.0)
+                        th_e3 = st.number_input("Ngưỡng: TBEC", value=30.0)
+                        th_req3 = st.number_input("Ngưỡng: EC Yêu cầu", value=12.0)
+                        th_map = {"Số lần tưới": th_t3, "TBEC thực tế": th_e3, "EC yêu cầu": th_req3}
 
-                    df_t3 = daily.filter(pl.col("s_id") == s_opts[sel_v3]["s_id"]).sort("Date")
-                    if cols:
-                        df_clean = df_t3.drop_nulls(subset=[p_map[c] for c in cols])
-                        if not df_clean.is_empty():
-                            dts, labels, stgs = df_clean["Date"].to_list(), [], []
-                            v_data = {c: {"d": df_clean[p_map[c]].to_list(), "g": []} for c in cols}
-                            c_s, idx = dts[0], 1
+                    df_tab3 = daily.filter(pl.col("s_id") == s_options[sel_label_3]["s_id"]).sort("Date")
+                    if cols_to_check:
+                        req_cols = [param_map[k] for k in cols_to_check]
+                        df_tab3_clean = df_tab3.drop_nulls(subset=req_cols)
+                        
+                        if not df_tab3_clean.is_empty():
+                            dates, stage_labels, stages_multi = df_tab3_clean["Date"].to_list(), [], []
+                            vals = {k: {"data": df_tab3_clean[param_map[k]].to_list(), "grp": []} for k in cols_to_check}
+                            curr_start, idx = dates[0], 1
                             
-                            for i in range(len(dts)):
+                            for i in range(len(dates)):
                                 conds = []
-                                for c in cols:
-                                    if v_data[c]["g"]:
-                                        avg = sum(v_data[c]["g"]) / len(v_data[c]["g"])
-                                        conds.append(abs(v_data[c]["d"][i] - avg) > th_map[c])
+                                for k in cols_to_check:
+                                    if vals[k]["grp"]:
+                                        avg_grp = sum(vals[k]["grp"]) / len(vals[k]["grp"])
+                                        conds.append(abs(vals[k]["data"][i] - avg_grp) > th_map[k])
                                     else: conds.append(False)
                                 
-                                if (any(conds) if mode == "OR" else all(conds)) and len(v_data[cols[0]]["g"]) >= 2:
-                                    stgs.append({"Giai đoạn": f"GĐ {idx}", "Bắt đầu": c_s, "Kết thúc": dts[i-1]})
-                                    c_s, idx = dts[i], idx + 1
-                                    for c in cols: v_data[c]["g"] = []
+                                cut_stage = any(conds) if logic_mode == "OR" else all(conds)
+                                if cut_stage and len(vals[cols_to_check[0]]["grp"]) >= 2:
+                                    stages_multi.append({"Giai đoạn": f"GĐ {idx}", "Bắt đầu": curr_start, "Kết thúc": dates[i-1]})
+                                    curr_start, idx = dates[i], idx + 1
+                                    for k in cols_to_check: vals[k]["grp"] = []
                                 
-                                for c in cols: v_data[c]["g"].append(v_data[c]["d"][i])
-                                labels.append(f"GĐ {idx}")
+                                for k in cols_to_check: vals[k]["grp"].append(vals[k]["data"][i])
+                                stage_labels.append(f"GĐ {idx}")
                             
-                            stgs.append({"Giai đoạn": f"GĐ {idx}", "Bắt đầu": c_s, "Kết thúc": dts[-1]})
-                            df_p3 = df_clean.to_pandas()
-                            df_p3['Giai đoạn'] = labels
+                            stages_multi.append({"Giai đoạn": f"GĐ {idx}", "Bắt đầu": curr_start, "Kết thúc": dates[-1]})
                             
-                            st.plotly_chart(px.bar(df_p3, x="Date", y=p_map[cols[0]], color='Giai đoạn', title=f"Vùng màu phân chia theo {cols[0]}").update_xaxes(dtick="86400000", tickformat="%d-%m"), use_container_width=True)
+                            df_plot = df_tab3_clean.to_pandas()
+                            df_plot['Giai đoạn'] = stage_labels
+                            
+                            fig_multi = px.bar(df_plot, x="Date", y=param_map[cols_to_check[0]], color='Giai đoạn', title=f"Phân chia giai đoạn theo {cols_to_check[0]}")
+                            fig_multi.update_xaxes(dtick="86400000", tickformat="%d-%m", tickangle=-45)
+                            st.plotly_chart(fig_multi, use_container_width=True)
 
                             st.divider()
-                            sel_g = st.selectbox("Chọn Giai đoạn xem chi tiết:", [s["Giai đoạn"] for s in stgs])
-                            df_det = df_p3[df_p3['Giai đoạn'] == sel_g][['Date', 'turns', 'total_time_min', 'avg_ec', 'avg_req_ec']]
-                            df_det.columns = ['Ngày', 'Lần tưới', 'Phút tưới', 'EC thực', 'EC yêu cầu']
+                            st.markdown("### 🔎 Chi tiết thông số & Đánh giá trung bình")
+                            selected_stage = st.selectbox("Chọn giai đoạn để xem:", [stg["Giai đoạn"] for stg in stages_multi])
                             
-                            # Thêm hàng Trung bình
-                            avg_val = df_det.mean(numeric_only=True).to_frame().T
-                            avg_val['Ngày'] = "--- TRUNG BÌNH ---"
-                            df_f = pd.concat([df_det, avg_val], ignore_index=True)
+                            df_detail = df_plot[df_plot['Giai đoạn'] == selected_stage][['Date', 'turns', 'total_time_min', 'avg_ec', 'avg_req_ec']]
+                            df_detail.columns = ['Ngày', 'Số lần tưới', 'Tổng TG (phút)', 'TBEC thực tế', 'EC Yêu cầu']
                             
-                            st.dataframe(df_f.style.format({'Lần tưới': '{:.1f}', 'Phút tưới': '{:.1f}', 'EC thực': '{:.2f}', 'EC yêu cầu': '{:.2f}'}), use_container_width=True, hide_index=True)
+                            # Tính hàng trung bình
+                            avg_row = {
+                                'Ngày': '--- TRUNG BÌNH ---',
+                                'Số lần tưới': df_detail['Số lần tưới'].mean(),
+                                'Tổng TG (phút)': df_detail['Tổng TG (phút)'].mean(),
+                                'TBEC thực tế': df_detail['TBEC thực tế'].mean(),
+                                'EC Yêu cầu': df_detail['EC Yêu cầu'].mean()
+                            }
+                            
+                            import pandas as pd
+                            df_final = pd.concat([df_detail, pd.DataFrame([avg_row])], ignore_index=True)
+                            
+                            st.dataframe(df_final.style.format({'Số lần tưới': '{:.1f}', 'Tổng TG (phút)': '{:.1f}', 'TBEC thực tế': '{:.2f}', 'EC Yêu cầu': '{:.2f}'}), use_container_width=True, hide_index=True)
         else:
             st.error(msg)
