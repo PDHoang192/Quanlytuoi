@@ -140,11 +140,11 @@ tab1, tab2, tab3 = st.tabs(["📋 Danh sách Vụ", "📈 Biểu đồ tổng qu
 
 with tab1:
     rows = []
-        for i, s in enumerate(s_dicts):
-            if i > 0:
-                r_s, r_e = s_dicts[i-1]["Kết thúc"] + datetime.timedelta(days=1), s["Bắt đầu"] - datetime.timedelta(days=1)
-                    if (r_e - r_s).days >= 0:
-                        rows.append({"Đối tượng": "⏳ Nghỉ đất", "Từ": r_s, "Đến": r_e, "Số ngày": (r_e - r_s).days + 1})
+    for i, s in enumerate(s_dicts):
+                        if i > 0:
+                            r_s, r_e = s_dicts[i-1]["Kết thúc"] + datetime.timedelta(days=1), s["Bắt đầu"] - datetime.timedelta(days=1)
+                            if (r_e - r_s).days >= 0:
+                                rows.append({"Đối tượng": "⏳ Nghỉ đất", "Từ": r_s, "Đến": r_e, "Số ngày": (r_e - r_s).days + 1})
                         rows.append({"Đối tượng": f"🌱 Vụ {i+1}", "Từ": s["Bắt đầu"], "Đến": s["Kết thúc"], "Số ngày": s["Số ngày"]})
                     st.table(rows)
 
