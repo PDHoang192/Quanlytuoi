@@ -178,8 +178,8 @@ if uploaded_file:
                             st.divider()
                             sel_g = st.selectbox("Chọn Giai đoạn:", [s["Giai đoạn"] for s in stgs])
                             
-                            # --- FIX LỖI SCHEMA TẠI ĐÂY ---
-                            # 1. Ép kiểu Date về String trước khi concat
+                            # --- PHẦN FIX LỖI SCHEMA ---
+                            # Lấy dữ liệu chi tiết và ép kiểu cột Date về String (Utf8)
                             df_det = df_p3.filter(pl.col("Giai đoạn") == sel_g).select([
                                 pl.col("Date").cast(pl.Utf8).alias("Ngày"),
                                 pl.col("turns").alias("Lần"),
@@ -188,7 +188,7 @@ if uploaded_file:
                                 pl.col("avg_req_ec").alias("EC yêu cầu")
                             ])
 
-                            # 2. Tạo hàng trung bình với các cột cùng kiểu dữ liệu
+                            # Tạo hàng trung bình đảm bảo kiểu dữ liệu Ngày là String, các cột số là Float64
                             df_avg = df_det.select([
                                 pl.lit("--- TRUNG BÌNH ---").alias("Ngày"),
                                 pl.col("Lần").mean().cast(pl.Float64),
@@ -197,6 +197,6 @@ if uploaded_file:
                                 pl.col("EC yêu cầu").mean().cast(pl.Float64)
                             ])
 
-                            # 3. Concat an toàn vì Schema đã khớp (Tất cả cột Ngày là String, các cột số là Float64)
+                            # Nối bảng
                             df_final = pl.concat([df_det, df_avg])
                             st.dataframe(df_final, use_container_width=True, hide_index=True)
