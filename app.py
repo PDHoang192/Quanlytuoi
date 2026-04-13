@@ -128,7 +128,7 @@ if uploaded_file:
                     sel_v = st.selectbox("Chọn Vụ:", list(s_opts.keys()), key="v2")
                     df_v = daily.filter(pl.col("s_id") == s_opts[sel_v]["s_id"]).sort("Date")
                     f1 = go.Figure()
-                    f1.add_trace(go.Bar(x=df_v["Date"], y=df_v["turns"], name="Lần", marker_color='#3366CC', yaxis='y1'))
+                    f1.add_trace(go.Bar(x=df_v["Date"], y=df_v["turns"], name="Lần", marker_color='#90EE90', yaxis='y1'))
                     f1.add_trace(go.Scatter(x=df_v["Date"], y=df_v["total_time_min"], name="Phút", marker_color='#FF3366', yaxis='y2'))
                     f1.update_layout(yaxis2=dict(overlaying='y', side='right'), hovermode="x unified")
                     st.plotly_chart(f1, use_container_width=True)
