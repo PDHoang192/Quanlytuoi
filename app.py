@@ -1,16 +1,39 @@
 import streamlit as st
 import polars as pl
-import json
-import re
-import ast
-import datetime
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-# Cấu hình trang
+# ==========================================
+# 1. CẤU HÌNH TRANG (Bắt buộc để app tràn viền)
+# ==========================================
 st.set_page_config(page_title="Hệ Thống Phân Tích Tưới", layout="wide", page_icon="🌱")
 
-# --- HÀM XỬ LÝ DỮ LIỆU ---
+# Ẩn menu mặc định của Streamlit và đổi màu nút bấm chính
+st.markdown("""
+<style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    .stButton button {
+        background-color: #0c613c !important; 
+        color: white !important; 
+        border-radius: 8px !important;
+        font-weight: bold !important;
+    }
+    .stButton button:hover {
+        background-color: #0a4d30 !important;
+    }
+    /* Đổi màu viền container */
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 12px !important;
+        background-color: #ffffff;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ==========================================
+# 2. HÀM XỬ LÝ DỮ LIỆU CỦA BẠN (Paste lại code cũ vào đây)
+# ==========================================
 @st.cache_data
 def parse_log_file_cached(file_content_bytes):
     raw_text = file_content_bytes.decode("utf-8").strip()
@@ -60,62 +83,59 @@ def process_data(df, start_d, end_d):
     seasons = seasons.filter(pl.col("Số ngày") >= min_season_days)
     return (df_pairs, seasons, daily), "Thành công"
 
-# --- GIAO DIỆN ---
+
+# ==========================================
+# 3. GIAO DIỆN HEADER (Phần đầu trang)
+# ==========================================
+st.markdown("""
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #f0f2f6;">
+        <h1 style="color: #111; font-size: 26px; margin: 0; font-family: sans-serif;">Hệ thống Phân Tích Tưới Tiêu</h1>
+        <div>
+            <span style="background-color: #e6f9f0; color: #28a745; padding: 6px 15px; border-radius: 20px; font-weight: 700; font-size: 12px; margin-right: 10px; letter-spacing: 0.5px;">HỆ THỐNG: ONLINE</span>
+            <span style="background-color: #f1f3f8; color: #555; padding: 6px 15px; border-radius: 20px; font-weight: 600; font-size: 12px; border: 1px solid #e1e4eb;">ID: PH-4290</span>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
+
+
+# ==========================================
+# 4. GIAO DIỆN SIDEBAR (Thanh bên trái)
+# ==========================================
 with st.sidebar:
-    st.header("⚙️ Nguồn Dữ Liệu")
-    target_stt = st.selectbox("Chọn STT Khu vực:", [1, 2, 3, 4], index=0)
-    uploaded_file = st.file_uploader("1. Log Tưới (Chính)", type=['txt', 'json'])
-    fert_file = st.file_uploader("2. Log Châm Phân", type=['txt', 'json'])
-
-if uploaded_file:
-    raw_data = parse_log_file_cached(uploaded_file.getvalue())
-    df_raw = pl.DataFrame(raw_data)
-    search_key = str(target_stt)
+    # Card trạng thái hệ thống bơm
+    st.markdown("""
+        <div style="background-color: #ffffff; padding: 20px; border-radius: 12px; margin-bottom: 25px; border-left: 5px solid #0c613c; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <div style="font-size: 28px;">💧</div>
+                <div>
+                    <div style="font-size: 11px; font-weight: 700; color: #777; letter-spacing: 1px;">HYDRAULIC SYSTEMS</div>
+                    <div style="font-size: 18px; font-weight: 800; color: #111; margin-top: 2px;">Flow: 42m³/h</div>
+                </div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
     
-    if "STT" in df_raw.columns:
-        df_raw = df_raw.filter(pl.col("STT").cast(pl.Utf8).str.contains(search_key))
-    elif "Tên khu" in df_raw.columns:
-        df_raw = df_raw.filter(pl.col("Tên khu").str.contains(search_key))
-        
-    if not df_raw.is_empty():
-        df_raw = df_raw.with_columns([
-            pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S", strict=False).alias("dt"),
-            pl.col("TBEC").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False) if "TBEC" in df_raw.columns else pl.lit(None)
-        ]).drop_nulls(subset=["dt"]).sort("dt")
-        
-        min_d, max_d = df_raw["dt"].min().date(), df_raw["dt"].max().date()
-        date_mode = st.sidebar.radio("Phạm vi:", ["Toàn bộ", "Tùy chọn"])
-        start_date, end_date = min_d, max_d
-        if date_mode == "Tùy chọn":
-            sel_dates = st.sidebar.date_input("Chọn ngày:", [min_d, max_d], min_value=min_d, max_value=max_d)
-            if len(sel_dates) == 2: start_date, end_date = sel_dates
-        
-        res, msg = process_data(df_raw, start_date, end_date)
-        if res:
-            df_p, seasons, daily = res
-            
-            daily = daily.with_columns(pl.lit(None).cast(pl.Float64).alias("avg_req_ec"))
-            
-            if fert_file:
-                try:
-                    df_f = pl.DataFrame(parse_log_file_cached(fert_file.getvalue()))
-                    if "EC yêu cầu" in df_f.columns:
-                        df_f = df_f.with_columns([
-                            pl.col("Thời gian").str.to_datetime("%Y-%m-%d %H-%M-%S", strict=False).dt.date().alias("Date"),
-                            pl.col("EC yêu cầu").cast(pl.Utf8).str.replace(",", ".").cast(pl.Float64, strict=False)
-                        ]).drop_nulls(subset=["Date", "EC yêu cầu"])
-                        df_f_avg = df_f.group_by("Date").agg([pl.col("EC yêu cầu").mean().alias("avg_req_ec_new")])
-                        daily = daily.join(df_f_avg, on="Date", how="left")
-                        daily = daily.with_columns(pl.coalesce(["avg_req_ec_new", "avg_req_ec"]).alias("avg_req_ec")).drop("avg_req_ec_new")
-                except: pass
+    st.markdown("<p style='font-size: 13px; font-weight: 700; color: #666;'>NGUỒN DỮ LIỆU</p>", unsafe_allow_html=True)
+    target_stt = st.selectbox("STT Khu vực:", ["Khu vực A-01", "Khu vực B-02", "Khu vực C-03"])
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    uploaded_file = st.file_uploader("📂 Log Tưới (.csv/.txt)", type=['txt', 'json', 'csv'])
+    fert_file = st.file_uploader("📂 Log Châm Phân (.csv/.txt)", type=['txt', 'json', 'csv'])
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    date_mode = st.radio("Khoảng thời gian:", ["Toàn bộ", "Tùy chọn"])
+    
+    process_btn = st.button("CẬP NHẬT DỮ LIỆU", use_container_width=True)
 
-            s_dicts = seasons.to_dicts()
-            if s_dicts:
-                s_opts = {f"Vụ {i+1} ({s['Bắt đầu']} -> {s['Kết thúc']})": s for i, s in enumerate(s_dicts)}
-                t1, t2, t3 = st.tabs(["📋 Danh Sách Vụ", "📊 Biểu Đồ", "🧠 Phân Tích Giai Đoạn"])
 
-                with t1:
-                    rows = []
+# ==========================================
+# 5. BỐ CỤC NỘI DUNG CHÍNH (Tabs & Columns)
+# ==========================================
+# Dùng CSS để căn chỉnh màu sắc của Tab mặc định Streamlit
+tab1, tab2, tab3 = st.tabs(["📋 Danh sách Vụ", "📈 Biểu đồ tổng quan", "🧠 Phân tích giai đoạn đa biến"])
+
+with tab1:
+    rows = []
                     for i, s in enumerate(s_dicts):
                         if i > 0:
                             r_s, r_e = s_dicts[i-1]["Kết thúc"] + datetime.timedelta(days=1), s["Bắt đầu"] - datetime.timedelta(days=1)
@@ -124,11 +144,11 @@ if uploaded_file:
                         rows.append({"Đối tượng": f"🌱 Vụ {i+1}", "Từ": s["Bắt đầu"], "Đến": s["Kết thúc"], "Số ngày": s["Số ngày"]})
                     st.table(rows)
 
-                with t2:
-                    sel_v = st.selectbox("Chọn Vụ:", list(s_opts.keys()), key="v2")
+with tab2:
+    sel_v = st.selectbox("Chọn Vụ:", list(s_opts.keys()), key="v2")
                     df_v = daily.filter(pl.col("s_id") == s_opts[sel_v]["s_id"]).sort("Date")
                     f1 = go.Figure()
-                    f1.add_trace(go.Bar(x=df_v["Date"], y=df_v["turns"], name="Lần", marker_color='#90EE90', yaxis='y1'))
+                    f1.add_trace(go.Bar(x=df_v["Date"], y=df_v["turns"], name="Lần", marker_color='#3366CC', yaxis='y1'))
                     f1.add_trace(go.Scatter(x=df_v["Date"], y=df_v["total_time_min"], name="Phút", marker_color='#FF3366', yaxis='y2'))
                     f1.update_layout(yaxis2=dict(overlaying='y', side='right'), hovermode="x unified")
                     st.plotly_chart(f1, use_container_width=True)
@@ -138,9 +158,8 @@ if uploaded_file:
                     if "avg_req_ec" in df_v.columns and not df_v["avg_req_ec"].null_count() == len(df_v):
                         f2.add_trace(go.Scatter(x=df_v["Date"], y=df_v["avg_req_ec"], name="EC Yêu cầu", line=dict(dash='dash')))
                     st.plotly_chart(f2, use_container_width=True)
-
-                with t3:
-                    p_map = {"Số lần tưới": "turns", "TBEC thực tế": "avg_ec", "EC yêu cầu": "avg_req_ec"}
+with tab3:
+    p_map = {"Số lần tưới": "turns", "TBEC thực tế": "avg_ec", "EC yêu cầu": "avg_req_ec"}
                     valid_opts = ["Số lần tưới", "TBEC thực tế"]
                     if "avg_req_ec" in daily.columns and daily["avg_req_ec"].null_count() < len(daily):
                         valid_opts.append("EC yêu cầu")
@@ -223,3 +242,31 @@ if uploaded_file:
                             st.warning("Dữ liệu không đủ để phân tích giai đoạn.")
         else:
             st.error(msg)
+
+    with col_side:
+        # THẺ 1: ĐỘ ẨM ĐẤT
+        st.markdown("""
+            <div style="background-color: #0d6e46; color: white; padding: 25px; border-radius: 12px; margin-bottom: 25px; position: relative; overflow: hidden;">
+                <div style="font-size: 12px; font-weight: 700; letter-spacing: 1px; opacity: 0.9;">ĐỘ ẨM ĐẤT TRUNG BÌNH</div>
+                <div style="font-size: 42px; font-weight: 800; margin-top: 15px;">42.8%</div>
+                <div style="background-color: rgba(255,255,255,0.2); height: 4px; width: 100%; border-radius: 2px; margin-top: 15px;">
+                    <div style="background-color: white; height: 100%; width: 42.8%; border-radius: 2px;"></div>
+                </div>
+                <div style="position: absolute; right: -10px; bottom: -20px; font-size: 80px; opacity: 0.1;">💧</div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        # THẺ 2: THÔNG BÁO HỆ THỐNG
+        st.markdown("""
+            <div style="background-color: white; padding: 20px; border-radius: 12px; margin-bottom: 25px; border-left: 5px solid #0c613c; border-top: 1px solid #eee; border-right: 1px solid #eee; border-bottom: 1px solid #eee;">
+                <div style="font-size: 12px; font-weight: 700; color: #555; letter-spacing: 0.5px; margin-bottom: 10px;">THÔNG BÁO HỆ THỐNG</div>
+                <p style="margin: 0 0 15px 0; color: #333; font-size: 14px; line-height: 1.6;">Áp suất đường ống khu vực A-01 đang ở mức cao (<strong>2.4 bar</strong>). Đề xuất kiểm tra van xả.</p>
+                <a href="#" style="color: #0c613c; font-weight: 700; text-decoration: none; font-size: 12px; letter-spacing: 0.5px;">CHI TIẾT ›</a>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        # THẺ 3: HÌNH ẢNH NHÀ MÀNG (Bổ sung sinh động)
+        st.markdown("""
+            <img src="https://images.unsplash.com/photo-1595841696650-5f212239d1b0?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80" 
+                 style="width: 100%; height: 160px; object-fit: cover; border-radius: 12px; border: 1px solid #eee;">
+        """, unsafe_allow_html=True)
