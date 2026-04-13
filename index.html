@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Precision Harvest Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div class="app-container">
+    <header class="header">
+        <div class="logo">PRECISION HARVEST</div>
+        <nav class="nav">
+            <a href="#" class="nav-link active">Dashboard</a>
+            <a href="#" class="nav-link">Analytics</a>
+            <a href="#" class="nav-link">Reports</a>
+            <a href="#" class="nav-link">Settings</a>
+        </nav>
+        <div class="header-icons">
+            <span class="icon">&#128276;</span> <div class="avatar">&#128100;</div> </div>
+    </header>
+
+    <div class="main-layout">
+        <aside class="sidebar">
+            <div class="system-status">
+                <div class="status-icon">&#128167;</div>
+                <div class="status-text">
+                    <div class="system-title">HYDRAULIC SYSTEMS</div>
+                    <div class="system-value">Flow: 42m³/h</div>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="section-title">LOG TƯỚI</div>
+                <div class="upload-box">
+                    <span class="upload-icon">&#8862;</span>
+                    <span class="upload-text">Tải lên file .csv hoặc .xlsx</span>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="section-title">LOG CHÂM PHÂN</div>
+                <div class="upload-box">
+                    <span class="upload-icon">&#9618;</span>
+                    <span class="upload-text">Tải lên dữ liệu phân bón</span>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="form-group">
+                    <label>STT KHU VỰC</label>
+                    <select>
+                        <option>Khu vực A-01</option>
+                        <option>Khu vực B-02</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>KHOẢNG THỜI GIAN</label>
+                    <input type="text" placeholder="mm/dd/yyyy">
+                    <input type="text" placeholder="mm/dd/yyyy">
+                </div>
+            </div>
+
+            <button class="update-button">CẬP NHẬT DỮ LIỆU</button>
+        </aside>
+
+        <main class="content">
+            <div class="content-header">
+                <h1>Hệ thống Phân Tích Tưới Tiêu</h1>
+                <div class="status-badges">
+                    <span class="badge status-online">HỆ THỐNG: ONLINE</span>
+                    <span class="badge status-id">ID: PH-4290</span>
+                </div>
+            </div>
+
+            <div class="tabs">
+                <button class="tab active">Danh sách Vụ</button>
+                <button class="tab">Biểu đồ tổng quan</button>
+                <button class="tab">Phân tích giai đoạn đa biến</button>
+            </div>
+
+            <div class="cards-grid">
+                <div class="card table-card">
+                    <div class="card-header">
+                        <h2>CHU KỲ CÂY TRỒNG & NGHỈ VỤ</h2>
+                        <button class="filter-button">&#128209;</button>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>STT VỤ</th>
+                                <th>NGÀY BẮT ĐẦU</th>
+                                <th>NGÀY KẾT THÚC</th>
+                                <th>LOẠI CÂY</th>
+                                <th>TRẠNG THÁI</th>
+                                <th>HIỆU SUẤT</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>VC-2023-01</td>
+                                <td>12/01/2024</td>
+                                <td>15/04/2024</td>
+                                <td>Dưa Lưới</td>
+                                <td><span class="dot done"></span>Đã hoàn thành</td>
+                                <td>94.2%</td>
+                            </tr>
+                            <tr class="highlight">
+                                <td>NV-2023-Q2</td>
+                                <td>16/04/2024</td>
+                                <td>30/04/2024</td>
+                                <td>Nghỉ đất / Làm cỏ</td>
+                                <td><span class="dot rest"></span>Giai đoạn nghỉ</td>
+                                <td>--</td>
+                            </tr>
+                            <tr>
+                                <td>VC-2024-02</td>
+                                <td>01/05/2024</td>
+                                <td>Hiện tại</td>
+                                <td>Cà Chua Bi</td>
+                                <td class="status-growing"><span class="dot growing"></span>Đang sinh trưởng</td>
+                                <td>88.7%</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="right-cards">
+                    <div class="card humidity-card">
+                        <div class="humidity-title">ĐỘ ẨM ĐẤT TRUNG BÌNH</div>
+                        <div class="humidity-value">42.8%</div>
+                        <div class="humidity-icon">&#128167;</div>
+                    </div>
+                    <div class="card notification-card">
+                        <h3>THÔNG BÁO HỆ THỐNG</h3>
+                        <p>Áp suất đường ống khu vực A-01 đang ở mức cao (2.4 bar). Đề xuất kiểm tra van xả.</p>
+                        <a href="#" class="details-link">CHI TIẾT &rsaquo;</a>
+                    </div>
+                    <img src="https://via.placeholder.com/200x120" alt="Farm thumbnail" class="farm-thumbnail">
+                </div>
+            </div>
+
+            <div class="card analysis-card">
+                <div class="analysis-header">
+                    <div class="analysis-titles">
+                        <h2>Phân tích Giai đoạn Đa biến</h2>
+                        <p>Tương quan giữa số lượt tưới, thời gian và chỉ số EC</p>
+                    </div>
+                    <div class="analysis-controls">
+                        <label><input type="checkbox" checked> Số lượt</label>
+                        <label><input type="checkbox" checked> Số phút</label>
+                        <label><input type="checkbox" checked> EC Thực tế</label>
+                        <label><input type="checkbox"> EC Yêu cầu</label>
+                        <div class="threshold-group">
+                            <label>NGƯỠNG:</label>
+                            <input type="text" value="2.5">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="chart-placeholder">
+                    Biểu đồ (Kết hợp Cột và Đường)
+                </div>
+
+                <div class="add-button">+</div>
+            </div>
+
+            <div class="card stats-table-card">
+                <table class="stats-table">
+                    <thead>
+                        <tr>
+                            <th>THAM SỐ PHÂN TÍCH</th>
+                            <th>TỔNG SỐ LƯỢT</th>
+                            <th>TỔNG SỐ PHÚT</th>
+                            <th>EC TRUNG BÌNH</th>
+                            <th>ĐỘ LỆCH CHUẨN</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>GĐ Kiến thiết</td>
+                            <td>42 lượt</td>
+                            <td>1,260 phút</td>
+                            <td>1.8 mS/cm</td>
+                            <td>0.12</td>
+                        </tr>
+                        <tr>
+                            <td>GĐ Ra hoa</td>
+                            <td>68 lượt</td>
+                            <td>2,040 phút</td>
+                            <td>2.4 mS/cm</td>
+                            <td>0.08</td>
+                        </tr>
+                        <tr class="total-row">
+                            <td>--- TRUNG BÌNH ---</td>
+                            <td>55 lượt</td>
+                            <td>1,650 phút</td>
+                            <td>2.1 mS/cm</td>
+                            <td>&plusmn;0.10</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+        </main>
+    </div>
+</div>
+
+</body>
+</html>
