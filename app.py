@@ -6,10 +6,9 @@ import ast
 import datetime
 import plotly.express as px
 import plotly.graph_objects as go
-import pandas as pd
 
 # Cấu hình trang
-st.set_page_config(page_title="Hệ Thống Phân Tích Tưới", layout="wide", page_icon="🌱")
+st.set_page_config(page_title="Hệ Thống Phân Tích Tưới (Polars Engine)", layout="wide", page_icon="🌱")
 
 # --- HÀM XỬ LÝ DỮ LIỆU ---
 @st.cache_data
@@ -27,7 +26,6 @@ def parse_log_file_cached(file_content_bytes):
         return ast.literal_eval(py_text)
 
 def process_data(df, start_d, end_d):
-    # Cấu hình mặc định
     gap_limit = 2
     min_season_days = 10
 
@@ -39,6 +37,7 @@ def process_data(df, start_d, end_d):
     df_on = df.filter(pl.col("Trạng thái").str.to_uppercase().str.strip_chars() == "BẬT")
     df_off = df.filter(pl.col("Trạng thái").str.to_uppercase().str.strip_chars() == "TẮT").with_columns(pl.col("dt").alias("dt_end"))
 
+    # Join tìm cặp BẬT-TẮT
     df_pairs = df_on.join_asof(df_off, on="dt", strategy="forward", suffix="_end")
     df_pairs = df_pairs.with_columns([
         ((pl.col("dt_end") - pl.col("dt")).dt.total_seconds()).alias("duration_s"),
@@ -46,12 +45,14 @@ def process_data(df, start_d, end_d):
         pl.coalesce(["TBEC_end", "TBEC"]).alias("val_ec_goc")
     ]).filter((pl.col("duration_s") > 0) & (pl.col("duration_s") < 3600))
 
+    # Tổng hợp theo ngày
     daily = df_pairs.group_by("Date").agg([
         pl.count().alias("turns"),
         (pl.col("duration_s").sum() / 60).round(1).alias("total_time_min"),
         pl.col("val_ec_goc").mean().alias("avg_ec")
     ]).sort("Date")
 
+    # Thuật toán tách vụ
     daily = daily.with_columns([(pl.col("Date").diff().dt.total_days() > gap_limit).fill_null(False).alias("is_new_season")])
     daily = daily.with_columns(pl.col("is_new_season").cum_sum().alias("s_id"))
     
@@ -64,7 +65,7 @@ def process_data(df, start_d, end_d):
     seasons = seasons.filter(pl.col("Số ngày") >= min_season_days)
     return (df_pairs, seasons, daily), "Thành công"
 
-# --- GIAO DIỆN SIDEBAR ---
+# --- GIAO DIỆN ---
 with st.sidebar:
     st.header("⚙️ Nguồn Dữ Liệu")
     target_stt = st.selectbox("Chọn STT Khu vực:", [1, 2, 3, 4], index=0)
@@ -77,6 +78,7 @@ if uploaded_file:
     df_raw = pl.DataFrame(raw_data)
     
     search_key = str(target_stt)
+    # Lọc theo STT hoặc Tên khu
     if "STT" in df_raw.columns:
         df_raw = df_raw.filter(pl.col("STT").cast(pl.Utf8).str.contains(search_key))
     elif "Tên khu" in df_raw.columns:
@@ -96,7 +98,7 @@ if uploaded_file:
         date_mode = st.sidebar.radio("Phạm vi dữ liệu:", ["Toàn bộ", "Tùy chọn"])
         start_date, end_date = min_d, max_d
         if date_mode == "Tùy chọn":
-            sel_dates = st.sidebar.date_input("Chọn khoảng ngày:", [min_d, max_d], min_value=min_d, max_value=max_d)
+            sel_dates = st.sidebar.date_input("Khoảng ngày:", [min_d, max_d], min_value=min_d, max_value=max_d)
             if len(sel_dates) == 2: start_date, end_date = sel_dates
         
         res, msg = process_data(df_raw, start_date, end_date)
@@ -104,7 +106,7 @@ if uploaded_file:
         if res:
             df_p, seasons, daily = res
             
-            # Tích hợp Log Châm Phân (EC Yêu Cầu)
+            # Tích hợp Log Châm Phân
             daily = daily.with_columns(pl.lit(None).cast(pl.Float64).alias("avg_req_ec"))
             if fert_file:
                 try:
@@ -137,9 +139,9 @@ if uploaded_file:
 
                 with t2:
                     sel_v = st.selectbox("Chọn Vụ:", options=list(s_opts.keys()), key="v2")
-                    df_v = daily.filter(pl.col("s_id") == s_opts[sel_v]["s_id"]).sort("Date").to_pandas()
+                    df_v = daily.filter(pl.col("s_id") == s_opts[sel_v]["s_id"]).sort("Date")
                     
-                    # Biểu đồ Số lần & Thời gian
+                    # Biểu đồ Số lần & Thời gian (Plotly nhận Polars trực tiếp)
                     f1 = go.Figure()
                     f1.add_trace(go.Bar(x=df_v["Date"], y=df_v["turns"], name="Lần tưới", marker_color='#3366CC', yaxis='y1'))
                     f1.add_trace(go.Scatter(x=df_v["Date"], y=df_v["total_time_min"], name="Tổng phút", mode='lines+markers', marker_color='#FF3366', yaxis='y2'))
@@ -151,13 +153,13 @@ if uploaded_file:
                     # Biểu đồ So sánh EC
                     f2 = go.Figure()
                     f2.add_trace(go.Scatter(x=df_v["Date"], y=df_v["avg_ec"], name="EC Thực tế", mode='lines+markers', line=dict(color='#FF9900', width=3)))
-                    if "avg_req_ec" in df_v.columns and not df_v["avg_req_ec"].isnull().all():
+                    if "avg_req_ec" in df_v.columns and not df_v["avg_req_ec"].null_count() == len(df_v):
                         f2.add_trace(go.Scatter(x=df_v["Date"], y=df_v["avg_req_ec"], name="EC Yêu cầu", mode='lines', line=dict(color='#00CC96', dash='dash')))
                     f2.update_layout(title="So sánh EC Thực tế vs EC Yêu cầu", xaxis=dict(dtick="86400000", tickformat="%d-%m"), yaxis=dict(title="mS/cm"), hovermode="x unified")
                     st.plotly_chart(f2, use_container_width=True)
 
                 with t3:
-                    st.subheader("Thuật toán phân chia giai đoạn tự động")
+                    st.subheader("Phân tích chi tiết theo giai đoạn tự động")
                     p_map = {"Số lần tưới": "turns", "TBEC thực tế": "avg_ec", "EC yêu cầu": "avg_req_ec"}
                     c1, c2 = st.columns(2)
                     with c1:
@@ -172,7 +174,6 @@ if uploaded_file:
 
                     df_t3 = daily.filter(pl.col("s_id") == s_opts[sel_v3]["s_id"]).sort("Date")
                     if cols:
-                        # Lọc bỏ các dòng null của các cột đang xét
                         df_clean = df_t3.drop_nulls(subset=[p_map[c] for c in cols])
                         if not df_clean.is_empty():
                             dts, labels, stgs = df_clean["Date"].to_list(), [], []
@@ -196,24 +197,38 @@ if uploaded_file:
                                 labels.append(f"GĐ {idx}")
                             
                             stgs.append({"Giai đoạn": f"GĐ {idx}", "Bắt đầu": c_s, "Kết thúc": dts[-1]})
-                            df_p3 = df_clean.to_pandas()
-                            df_p3['Giai đoạn'] = labels
+                            df_p3 = df_clean.with_columns(pl.Series("Giai đoạn", labels))
                             
                             st.plotly_chart(px.bar(df_p3, x="Date", y=p_map[cols[0]], color='Giai đoạn', title=f"Phân chia giai đoạn theo {cols[0]}").update_xaxes(dtick="86400000", tickformat="%d-%m"), use_container_width=True)
 
                             st.divider()
                             st.markdown("### 🔎 Chi tiết thông số giai đoạn")
                             sel_g = st.selectbox("Chọn Giai đoạn:", [s["Giai đoạn"] for s in stgs])
-                            df_det = df_p3[df_p3['Giai đoạn'] == sel_g][['Date', 'turns', 'total_time_min', 'avg_ec', 'avg_req_ec']]
-                            df_det.columns = ['Ngày', 'Lần tưới', 'Phút tưới', 'EC thực', 'EC yêu cầu']
                             
-                            # Tính hàng Trung bình
-                            avg_val = df_det.mean(numeric_only=True).to_frame().T
-                            avg_val['Ngày'] = "--- TRUNG BÌNH ---"
-                            df_final = pd.concat([df_det, avg_val], ignore_index=True)
+                            # Lọc dữ liệu chi tiết bằng Polars
+                            df_det = df_p3.filter(pl.col("Giai đoạn") == sel_g).select([
+                                pl.col("Date").cast(pl.Utf8).alias("Ngày"),
+                                pl.col("turns").alias("Lần tưới"),
+                                pl.col("total_time_min").alias("Phút tưới"),
+                                pl.col("avg_ec").alias("EC thực"),
+                                pl.col("avg_req_ec").alias("EC yêu cầu")
+                            ])
+
+                            # Tính toán hàng trung bình bằng Polars
+                            df_avg = df_det.select([
+                                pl.lit("--- TRUNG BÌNH ---").alias("Ngày"),
+                                pl.col("Lần tưới").mean(),
+                                pl.col("Phút tưới").mean(),
+                                pl.col("EC thực").mean(),
+                                pl.col("EC yêu cầu").mean()
+                            ])
+
+                            # Kết hợp dữ liệu và hàng trung bình
+                            df_final = pl.concat([df_det, df_avg])
                             
-                            st.dataframe(df_final.style.format({'Lần tưới': '{:.1f}', 'Phút tưới': '{:.1f}', 'EC thực': '{:.2f}', 'EC yêu cầu': '{:.2f}'}), use_container_width=True, hide_index=True)
+                            # Hiển thị bảng
+                            st.dataframe(df_final, use_container_width=True, hide_index=True)
                         else:
-                            st.warning("Dữ liệu không đủ để phân tích giai đoạn dựa trên các cột đã chọn.")
+                            st.warning("Dữ liệu không đủ để phân tích giai đoạn.")
         else:
             st.error(msg)
