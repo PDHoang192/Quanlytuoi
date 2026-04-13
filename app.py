@@ -94,7 +94,6 @@ if uploaded_file:
         if res:
             df_p, seasons, daily = res
             
-            # Đảm bảo cột avg_req_ec luôn được khởi tạo
             daily = daily.with_columns(pl.lit(None).cast(pl.Float64).alias("avg_req_ec"))
             
             if fert_file:
@@ -142,7 +141,6 @@ if uploaded_file:
 
                 with t3:
                     p_map = {"Số lần tưới": "turns", "TBEC thực tế": "avg_ec", "EC yêu cầu": "avg_req_ec"}
-                    # Chỉ hiển thị EC yêu cầu trong tùy chọn phân tích nếu cột tồn tại và có dữ liệu
                     valid_opts = ["Số lần tưới", "TBEC thực tế"]
                     if "avg_req_ec" in daily.columns and daily["avg_req_ec"].null_count() < len(daily):
                         valid_opts.append("EC yêu cầu")
@@ -186,14 +184,12 @@ if uploaded_file:
                             st.divider()
                             sel_g = st.selectbox("Chọn Giai đoạn:", [s["Giai đoạn"] for s in stgs])
                             
-                            # --- CƠ CHẾ DYNAMIC SELECTION CHỐNG LỖI ---
-                            
-                            # 1. Khởi tạo danh sách select cơ bản (chắc chắn tồn tại)
+                            # --- FIX TẠI ĐÂY: Ép kiểu toàn bộ về Float64 ---
                             det_selects = [
                                 pl.col("Date").cast(pl.Utf8).alias("Ngày"),
-                                pl.col("turns").alias("Lần"),
-                                pl.col("total_time_min").alias("Phút"),
-                                pl.col("avg_ec").alias("EC thực")
+                                pl.col("turns").cast(pl.Float64).alias("Lần"),
+                                pl.col("total_time_min").cast(pl.Float64).alias("Phút"),
+                                pl.col("avg_ec").cast(pl.Float64).alias("EC thực")
                             ]
                             
                             avg_selects = [
@@ -203,15 +199,27 @@ if uploaded_file:
                                 pl.col("EC thực").mean().cast(pl.Float64)
                             ]
 
-                            # 2. Kiểm tra an toàn xem cột avg_req_ec có trong DataFrame không
                             if "avg_req_ec" in df_p3.columns:
                                 det_selects.append(pl.col("avg_req_ec").cast(pl.Float64).alias("EC yêu cầu"))
                                 avg_selects.append(pl.col("EC yêu cầu").mean().cast(pl.Float64))
 
-                            # 3. Lấy dữ liệu và tính trung bình
                             df_det = df_p3.filter(pl.col("Giai đoạn") == sel_g).select(det_selects)
                             df_avg = df_det.select(avg_selects)
 
-                            # 4. Concat an toàn
                             df_final = pl.concat([df_det, df_avg])
-                            st.dataframe(df_final, use_container_width=True, hide_index=True)
+                            
+                            # Hiển thị bảng và format số thập phân gọn gàng hơn
+                            st.dataframe(
+                                df_final.to_pandas().style.format({
+                                    "Lần": "{:.1f}", 
+                                    "Phút": "{:.1f}", 
+                                    "EC thực": "{:.2f}", 
+                                    "EC yêu cầu": "{:.2f}"
+                                }, na_rep="-"), 
+                                use_container_width=True, 
+                                hide_index=True
+                            )
+                        else:
+                            st.warning("Dữ liệu không đủ để phân tích giai đoạn.")
+        else:
+            st.error(msg)
