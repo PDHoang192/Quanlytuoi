@@ -51,6 +51,50 @@ with col2:
         </div>
     """, unsafe_allow_html=True)
 
+# 1. Nhúng CSS
+def local_css(file_name):
+    with open(file_name) as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+local_css("style.css")
+
+# 2. Tạo Header (Dùng HTML để cho đẹp)
+st.markdown("""
+    <div class="content-header">
+        <h1 style="margin: 0; font-size: 1.5rem; color: #0c613c;">Hệ thống Phân Tích Tưới Tiêu</h1>
+        <div class="status-badges">
+            <span class="badge status-online" style="background: #e6f9f0; color: #28a745; padding: 5px 10px; border-radius: 4px;">HỆ THỐNG: ONLINE</span>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
+
+# 3. Code Sidebar cũ của bạn giữ nguyên, Streamlit sẽ tự đẩy nó sang trái
+with st.sidebar:
+    st.header("⚙️ Nguồn Dữ Liệu")
+    # ... các nút upload file của bạn ...
+
+# Tạo 2 cột (Cột trái to hơn cột phải)
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    # Mở thẻ Card
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<h2 style="font-size: 1rem; color: #777;">BIỂU ĐỒ ĐA BIẾN</h2>', unsafe_allow_html=True)
+    
+    # Vẽ biểu đồ của bạn ở đây (Streamlit code bình thường)
+    # st.plotly_chart(fig, use_container_width=True)
+    
+    # Đóng thẻ Card
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with col2:
+    # Hiện thẻ thông báo / độ ẩm
+    st.markdown("""
+        <div class="card humidity-card" style="background-color: #0d6e46; color: white; padding: 20px; border-radius: 12px; height: 100%;">
+            <div style="font-size: 0.8rem; font-weight: 600;">ĐỘ ẨM ĐẤT TRUNG BÌNH</div>
+            <div style="font-size: 2.2rem; font-weight: 700; margin-top: 10px;">42.8%</div>
+        </div>
+    """, unsafe_allow_html=True)
+
 # --- HÀM XỬ LÝ DỮ LIỆU ---
 @st.cache_data
 def parse_log_file_cached(file_content_bytes):
