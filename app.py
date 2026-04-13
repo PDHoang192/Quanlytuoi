@@ -9,6 +9,47 @@ import plotly.graph_objects as go
 
 # Cấu hình trang
 st.set_page_config(page_title="Hệ Thống Phân Tích Tưới", layout="wide", page_icon="🌱")
+# --- HÀM NHÚNG CSS TỪ FILE NGOÀI ---
+def local_css(file_name):
+    with open(file_name) as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
+# Gọi hàm để áp dụng giao diện
+try:
+    local_css("style.css")
+except:
+    pass # Tránh lỗi nếu file chưa tồn tại
+
+# --- CẤU TRÚC GIAO DIỆN THEO STYLE MỚI ---
+# Thay vì dùng st.title mặc định, bạn có thể dùng HTML để giống mẫu thiết kế
+st.markdown("""
+    <div class="content-header">
+        <h1>Hệ thống Phân Tích Tưới Tiêu</h1>
+        <div class="status-badges">
+            <span class="badge status-online">HỆ THỐNG: ONLINE</span>
+            <span class="badge status-id">ID: PH-4290</span>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
+
+# Ví dụ tạo các thẻ Card như trong hình bằng HTML + CSS
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    # Đặt các biểu đồ hoặc bảng của bạn ở đây
+    # st.plotly_chart(fig)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with col2:
+    # Thẻ Độ ẩm đất
+    st.markdown("""
+        <div class="card humidity-card">
+            <div class="humidity-title">ĐỘ ẨM ĐẤT TRUNG BÌNH</div>
+            <div class="humidity-value">42.8%</div>
+            <div class="humidity-icon">💧</div>
+        </div>
+    """, unsafe_allow_html=True)
 
 # --- HÀM XỬ LÝ DỮ LIỆU ---
 @st.cache_data
