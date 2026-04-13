@@ -8,7 +8,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # Cấu hình trang
-st.set_page_config(page_title="Hệ Thống Phân Tích Tưới (Fixed Polars)", layout="wide", page_icon="🌱")
+st.set_page_config(page_title="Hệ Thống Phân Tích Tưới", layout="wide", page_icon="🌱")
 
 # --- HÀM XỬ LÝ DỮ LIỆU ---
 @st.cache_data
@@ -93,7 +93,10 @@ if uploaded_file:
         res, msg = process_data(df_raw, start_date, end_date)
         if res:
             df_p, seasons, daily = res
+            
+            # Đảm bảo cột avg_req_ec luôn được khởi tạo
             daily = daily.with_columns(pl.lit(None).cast(pl.Float64).alias("avg_req_ec"))
+            
             if fert_file:
                 try:
                     df_f = pl.DataFrame(parse_log_file_cached(fert_file.getvalue()))
@@ -133,164 +136,86 @@ if uploaded_file:
                     
                     f2 = go.Figure()
                     f2.add_trace(go.Scatter(x=df_v["Date"], y=df_v["avg_ec"], name="EC Thực", line=dict(color='#FF9900')))
-                    if not df_v["avg_req_ec"].null_count() == len(df_v):
+                    if "avg_req_ec" in df_v.columns and not df_v["avg_req_ec"].null_count() == len(df_v):
                         f2.add_trace(go.Scatter(x=df_v["Date"], y=df_v["avg_req_ec"], name="EC Yêu cầu", line=dict(dash='dash')))
                     st.plotly_chart(f2, use_container_width=True)
 
                 with t3:
-                    p_map = {
-                        "Số lần tưới": "turns",
-                        "TBEC thực tế": "avg_ec",
-                        "EC yêu cầu": "avg_req_ec"
-                    }
+                    p_map = {"Số lần tưới": "turns", "TBEC thực tế": "avg_ec", "EC yêu cầu": "avg_req_ec"}
+                    # Chỉ hiển thị EC yêu cầu trong tùy chọn phân tích nếu cột tồn tại và có dữ liệu
+                    valid_opts = ["Số lần tưới", "TBEC thực tế"]
+                    if "avg_req_ec" in daily.columns and daily["avg_req_ec"].null_count() < len(daily):
+                        valid_opts.append("EC yêu cầu")
 
                     c1, c2 = st.columns(2)
-
                     with c1:
                         sel_v3 = st.selectbox("Chọn Vụ:", list(s_opts.keys()), key="v3")
-                        cols = st.multiselect(
-                            "Thông số xét duyệt:",
-                            list(p_map.keys()),
-                            default=["Số lần tưới", "TBEC thực tế"]
-                        )
+                        cols = st.multiselect("Thông số xét duyệt:", valid_opts, default=["Số lần tưới", "TBEC thực tế"])
                         mode = st.radio("Logic:", ["OR", "AND"], horizontal=True)
-
                     with c2:
-                        th_map = {
-                            "Số lần tưới": st.number_input("Ngưỡng Lần", value=2.0),
-                            "TBEC thực tế": st.number_input("Ngưỡng TBEC", value=30.0),
-                            "EC yêu cầu": st.number_input("Ngưỡng EC yêu cầu", value=10.0),
-                        }
+                        th_t = st.number_input("Ngưỡng Lần", value=2.0)
+                        th_e = st.number_input("Ngưỡng TBEC", value=30.0)
+                        th_req = st.number_input("Ngưỡng EC yêu cầu", value=10.0)
+                        th_map = {"Số lần tưới": th_t, "TBEC thực tế": th_e, "EC yêu cầu": th_req}
 
-                    # --- LỌC DỮ LIỆU ---
-                    df_t3 = (
-                        daily
-                        .filter(pl.col("s_id") == s_opts[sel_v3]["s_id"])
-                        .sort("Date")
-                        .with_columns([
-                            pl.col("turns").cast(pl.Float64),
-                            pl.col("avg_ec").cast(pl.Float64),
-                            pl.col("avg_req_ec").cast(pl.Float64),
-                        ])
-                    )
+                    df_t3 = daily.filter(pl.col("s_id") == s_opts[sel_v3]["s_id"]).sort("Date")
+                    if cols:
+                        df_clean = df_t3.drop_nulls(subset=[p_map[c] for c in cols])
+                        if not df_clean.is_empty():
+                            dts, labels, stgs = df_clean["Date"].to_list(), [], []
+                            v_data = {c: {"d": df_clean[p_map[c]].to_list(), "g": []} for c in cols}
+                            c_s, idx = dts[0], 1
+                            for i in range(len(dts)):
+                                conds = []
+                                for c in cols:
+                                    if v_data[c]["g"]:
+                                        avg = sum(v_data[c]["g"]) / len(v_data[c]["g"])
+                                        conds.append(abs(v_data[c]["d"][i] - avg) > th_map[c])
+                                    else: conds.append(False)
+                                if (any(conds) if mode == "OR" else all(conds)) and len(v_data[cols[0]]["g"]) >= 2:
+                                    stgs.append({"Giai đoạn": f"GĐ {idx}", "Bắt đầu": c_s, "Kết thúc": dts[i-1]})
+                                    c_s, idx = dts[i], idx + 1
+                                    for c in cols: v_data[c]["g"] = []
+                                for c in cols: v_data[c]["g"].append(v_data[c]["d"][i])
+                                labels.append(f"GĐ {idx}")
+                            
+                            stgs.append({"Giai đoạn": f"GĐ {idx}", "Bắt đầu": c_s, "Kết thúc": dts[-1]})
+                            df_p3 = df_clean.with_columns(pl.Series("Giai đoạn", labels))
+                            st.plotly_chart(px.bar(df_p3, x="Date", y=p_map[cols[0]], color='Giai đoạn'))
 
-                    if not cols:
-                        st.warning("Hãy chọn ít nhất 1 thông số.")
-                        st.stop()
+                            st.divider()
+                            sel_g = st.selectbox("Chọn Giai đoạn:", [s["Giai đoạn"] for s in stgs])
+                            
+                            # --- CƠ CHẾ DYNAMIC SELECTION CHỐNG LỖI ---
+                            
+                            # 1. Khởi tạo danh sách select cơ bản (chắc chắn tồn tại)
+                            det_selects = [
+                                pl.col("Date").cast(pl.Utf8).alias("Ngày"),
+                                pl.col("turns").alias("Lần"),
+                                pl.col("total_time_min").alias("Phút"),
+                                pl.col("avg_ec").alias("EC thực")
+                            ]
+                            
+                            avg_selects = [
+                                pl.lit("--- TRUNG BÌNH ---").alias("Ngày"),
+                                pl.col("Lần").mean().cast(pl.Float64),
+                                pl.col("Phút").mean().cast(pl.Float64),
+                                pl.col("EC thực").mean().cast(pl.Float64)
+                            ]
 
-                    use_cols = ["Date"] + [p_map[c] for c in cols]
+                            # 2. Kiểm tra an toàn xem cột avg_req_ec có trong DataFrame không
+                            if "avg_req_ec" in df_p3.columns:
+                                det_selects.append(pl.col("avg_req_ec").cast(pl.Float64).alias("EC yêu cầu"))
+                                avg_selects.append(pl.col("EC yêu cầu").mean().cast(pl.Float64))
 
-                    existing_cols = [c for c in use_cols if c in df_t3.columns]
-                    df_clean = df_t3.select(existing_cols)
+                            # 3. Lấy dữ liệu và tính trung bình
+                            df_det = df_p3.filter(pl.col("Giai đoạn") == sel_g).select(det_selects)
+                            df_avg = df_det.select(avg_selects)
 
-                    valid_cols = []
-                    for c in cols:
-                        col_name = p_map[c]
-                        if col_name in df_clean.columns:
-                            if df_clean[col_name].null_count() < len(df_clean):
-                                valid_cols.append(c)
-
-                    if not valid_cols:
-                        st.error("Không có dữ liệu hợp lệ để phân tích.")
-                        st.stop()
-
-                    df_clean = df_clean.drop_nulls(subset=[p_map[c] for c in valid_cols])
-
-                    if df_clean.is_empty():
-                        st.warning("Dữ liệu sau khi lọc bị rỗng.")
-                        st.stop()
-
-                    # --- PHÂN GIAI ĐOẠN ---
-                    dts = df_clean["Date"].to_list()
-
-                    val_data = {
-                        c: df_clean[p_map[c]].to_list()
-                        for c in valid_cols
-                    }
-
-                    stages = []
-                    labels = []
-
-                    current_start = dts[0]
-                    idx = 1
-
-                    group_vals = {c: [] for c in valid_cols}
-
-                    for i in range(len(dts)):
-                        conds = []
-
-                        for c in valid_cols:
-                            if group_vals[c]:
-                                avg = sum(group_vals[c]) / len(group_vals[c])
-                                conds.append(abs(val_data[c][i] - avg) > th_map[c])
-                            else:
-                                conds.append(False)
-
-                        trigger = any(conds) if mode == "OR" else all(conds)
-
-                        if trigger and len(group_vals[valid_cols[0]]) >= 2:
-                            stages.append({
-                                "Giai đoạn": f"GĐ {idx}",
-                                "Bắt đầu": current_start,
-                                "Kết thúc": dts[i - 1]
-                            })
-
-                            current_start = dts[i]
-                            idx += 1
-                            group_vals = {c: [] for c in valid_cols}
-
-                        for c in valid_cols:
-                            group_vals[c].append(val_data[c][i])
-
-                        labels.append(f"GĐ {idx}")
-
-                    stages.append({
-                        "Giai đoạn": f"GĐ {idx}",
-                        "Bắt đầu": current_start,
-                        "Kết thúc": dts[-1]
-                    })
-
-                    # --- GẮN NHÃN ---
-                    df_p3 = df_clean.with_columns(pl.Series("Giai đoạn", labels))
-
-                    # --- BIỂU ĐỒ ---
-                    main_col = p_map[valid_cols[0]]
-
-                    st.plotly_chart(
-                        px.bar(df_p3, x="Date", y=main_col, color="Giai đoạn"),
-                        use_container_width=True
-                    )
-
-                    st.divider()
-
-                    # --- CHỌN GIAI ĐOẠN ---
-                    sel_g = st.selectbox("Chọn Giai đoạn:", [s["Giai đoạn"] for s in stages])
-
-                    # --- TABLE CHI TIẾT ---
-                    df_det = (
-                        df_p3
-                        .filter(pl.col("Giai đoạn") == sel_g)
-                        .select([
-                            pl.col("Date").cast(pl.Utf8).alias("Ngày"),
-                            pl.col("turns").cast(pl.Float64).alias("Lần"),
-                            pl.col("total_time_min").cast(pl.Float64).alias("Phút"),
-                            pl.col("avg_ec").cast(pl.Float64).alias("EC thực"),
-                            pl.col("avg_req_ec").cast(pl.Float64).alias("EC yêu cầu"),
-                        ])
-                    )
-
-                    if df_det.is_empty():
-                        st.warning("Không có dữ liệu trong giai đoạn này.")
-                        st.stop()
-
-                    df_avg = pl.DataFrame([{
-                        "Ngày": "--- TRUNG BÌNH ---",
-                        "Lần": df_det["Lần"].mean(),
-                        "Phút": df_det["Phút"].mean(),
-                        "EC thực": df_det["EC thực"].mean(),
-                        "EC yêu cầu": df_det["EC yêu cầu"].mean(),
-                    }])
-
-                    df_final = pl.concat([df_det, df_avg], how="vertical_relaxed")
-
-                    st.dataframe(df_final, use_container_width=True, hide_index=True)
+                            # 4. Concat an toàn
+                            df_final = pl.concat([df_det, df_avg])
+                            st.dataframe(df_final, use_container_width=True, hide_index=True)
+                        else:
+                            st.warning("Dữ liệu không đủ để phân tích giai đoạn.")
+        else:
+            st.error(msg)
