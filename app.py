@@ -109,8 +109,6 @@ if file_tuoi_tai_len:
     # Bước lọc Khu vực
     if "STT" in bang_du_lieu_tho.columns:
         bang_du_lieu_tho = bang_du_lieu_tho.filter(pl.col("STT").cast(pl.Utf8).str.contains(tu_khoa_tim_kiem))
-    elif "Tên khu" in bang_du_lieu_tho.columns:
-        bang_du_lieu_tho = bang_du_lieu_tho.filter(pl.col("Tên khu").str.contains(tu_khoa_tim_kiem))
         
     # Làm sạch dữ liệu trước khi đưa vào tính toán
     if not bang_du_lieu_tho.is_empty():
