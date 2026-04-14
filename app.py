@@ -40,7 +40,7 @@ def process_data(df, start_d, end_d):
         ((pl.col("dt_end") - pl.col("dt")).dt.total_seconds()).alias("duration_s"),
         pl.col("dt").dt.date().alias("Date"),
         pl.coalesce(["TBEC_end", "TBEC"]).alias("val_ec_goc")
-    ]).filter((pl.col("duration_s") > 0) & (pl.col("duration_s") < 3600))
+    ]).filter((pl.col("duration_s") > 20) & (pl.col("duration_s") < 300))
 
     daily = df_pairs.group_by("Date").agg([
         pl.count().alias("turns"),
